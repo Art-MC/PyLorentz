@@ -55,7 +55,7 @@ def TIE(i=-1, ptie=None, pscope=None, dataname='', sym=False, qc=None, save=Fals
             __Currently has bugs__. Qualitatively looks alright but quantitatively
             is not accurate. 
         v: Int. Verbosity. 
-            0 : no output
+            0 : No output
             1 : Default output
             2 : Extended output for debugging. 
 

@@ -22,6 +22,7 @@ from microscopes import Microscope
 from skimage import io as skimage_io
 from TIE_helper import *
 import textwrap
+from itertools import takewhile
 
 
 # ================================================================= #
@@ -201,6 +202,92 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
 
     ephi = pscope.sigma * (thk_map * isl_V0 + np.ones(mag_x.shape) * mem_thk * mem_V0)
     return (ephi, mphi)
+
+
+def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1): 
+    """ Load a .ovf or .omf file of magnetization values. 
+
+    Args: 
+        file: String. Path to file
+        sim: String. "OOMMF" or "mumax". OOMMF simulation gives outputs in 
+            A/m while mumax is scaled between 0 and 1, and therefore must be
+            multiplied by Msat. Setting sim=="raw" will give unscaled values.
+        Msat: Float. Saturation magnetization. Only relevant if sim=="mumax"
+        v: Int. Verbosity. 
+            0 : No output
+            1 : Default output
+            2 : Extended output, print full header. 
+
+    Returns: (mag_x, mag_y, mag_z, del_px)
+        mag_x: 2D array. x-component of magnetization. 
+        mag_y: 2D array. y-component of magnetization. 
+        mag_z: 2D array. z-component of magnetization. 
+        del_px: Float. Scale of images (nm/pixel)
+    """
+    vprint = print if v>=1 else lambda *a, **k: None
+
+    data = np.genfromtxt(file)
+    with open(file) as f:
+        header = list(takewhile(lambda s: s[0]=='#', f))
+    if v >= 2:
+        print(''.join(header))
+
+    for line in header:
+        if line.startswith("# xnodes"):
+            xsize = int(line.split(":",1)[1])
+        if line.startswith("# ynodes"):
+            ysize = int(line.split(":",1)[1])
+        if line.startswith("# znodes"):
+            zsize = int(line.split(":",1)[1])
+        if line.startswith("# xstepsize"):
+            xscale = float(line.split(":",1)[1])
+        if line.startswith("# ystepsize"):
+            yscale = float(line.split(":",1)[1])
+        if line.startswith("# zstepsize"):
+            zscale = float(line.split(":",1)[1])
+
+    if xsize is None or ysize is None or zsize is None: 
+        print(textwrap.dedent(f"""\
+    Simulation dimensions are not given. Expects keywords "xnodes", "ynodes, "znodes" for number of cells.
+    Currently found size (x y z): ({xsize}, {ysize}, {zsize})"""))
+        sys.exit(1)
+    else:
+        vprint(f"Simulation size (x y z) is: ({xsize}, {ysize}, {zsize})")
+
+    if xscale is None or yscale is None or zscale is None: 
+        print(textwrap.dedent(f"""\
+    Simulation scale not given. Expects keywords "xstepsize", "ystepsize, "zstepsize" for scale (nm/pixel).
+    Found scales (x y z): ({xscale}, {yscale}, {zscale})"""))
+        del_px = np.max([i for i in [xscale,yscale,zscale,0] if i is not None])
+        print(f"Proceeding with scale = {del_px} nm/pixel")
+    else:
+        assert xscale == yscale == zscale
+        del_px = xscale*1e9 # originally given in meters
+        vprint(f"Image scale is {del_px} nm/pixel.")
+
+    reshaped = data.reshape((zsize, ysize, xsize, 3))
+    if sim.lower() == 'oommf':
+        mu0 = 4*np.pi*1e-7
+        mag_x = reshaped[0,:,:,0] * mu0
+        mag_y = reshaped[0,:,:,1] * mu0
+        mag_z = reshaped[0,:,:,2] * mu0
+    elif sim.lower() == 'mumax': 
+        mag_x = reshaped[0,:,:,0] * Msat
+        mag_y = reshaped[0,:,:,1] * Msat
+        mag_z = reshaped[0,:,:,2] * Msat
+    elif sim.lower() == 'raw':
+        mag_x = reshaped[0,:,:,0]
+        mag_y = reshaped[0,:,:,1]
+        mag_z = reshaped[0,:,:,2]
+    else: 
+        print(textwrap.dedent("""\
+        Improper argument given for sim. Please set to one of the following options:
+            'oommf' : vector values given in A/m, will be scaled by mu0
+            'mumax' : vectors all of magnitude 1, will be scaled by Msat
+            'raw'   : vectors will not be scaled."""))
+        sys.exit(1)
+    return(mag_x, mag_y, mag_z, del_px)
+
 
 # ================================================================= #
 #           Various functions for displaying vector fields          #
