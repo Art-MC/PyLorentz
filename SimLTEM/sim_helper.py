@@ -17,12 +17,13 @@ from mpl_toolkits.mplot3d import Axes3D
 import sys as sys
 sys.path.append("..")
 import os
-from comp_phase import mansPhi
+from comp_phase import mansPhi, linsupPhi
 from microscopes import Microscope
 from skimage import io as skimage_io
 from TIE_helper import *
 import textwrap
 from itertools import takewhile
+import io 
 
 
 # ================================================================= #
@@ -31,7 +32,7 @@ from itertools import takewhile
 
 def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1, 
     def_val=0, add_random=False, save_path=None,
-    isl_thk=20, isl_xip0=50, mem_thk=50, mem_xip0=1000):
+    isl_thk=20, isl_xip0=50, mem_thk=50, mem_xip0=1000, v=1):
     """Simulate LTEM images for a given electron phase shift through a sample. 
 
     This function returns LTEM images simulated for in-focus and at +/- def_val 
@@ -63,6 +64,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         save_path: String. Will save a stack [underfocus, infocus, overfocus] as
             well as (mphi+ephi) as tiffs along with a params.text file. 
             Default None: Does not save. 
+        v: Int. Verbosity, set v=0 to suppress print statements. 
     Material Parameter Args:
         isl_thk: Float. Island thickness (nm). Default 20. 
         isl_xip0: Float. Island extinction distance (nm). Default 50. 
@@ -75,8 +77,10 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         im_in: 2D array (M,N). Simulated image at zero defocus.
         im_ov: 2D array (M,N). Simulated image at delta z = +def_val.
     """
+    vprint = print if v>=1 else lambda *a, **k: None
+    
     Tphi = mphi + ephi
-    print(f'Total fov is ({np.shape(Tphi)[1]*del_px},{np.shape(Tphi)[0]*del_px}) nm')
+    vprint(f'Total fov is ({np.shape(Tphi)[1]*del_px},{np.shape(Tphi)[0]*del_px}) nm')
     dy, dx = Tphi.shape
 
     if add_random:
@@ -102,7 +106,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         elif isl_shape.ndim == 2:
             thk_map = isl_shape*isl_thk
         else:
-            print(textwrap.dedent(f"""
+            vprint(textwrap.dedent(f"""
                 Mask given must be 2D (y,x) or 3D (y,x,z) array. 
                 It was given as a {isl_shape.ndim} dimension array."""))
             sys.exit(1)
@@ -119,7 +123,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
     im_ov = pscope.getImage(ObjWave,qq,del_px)
     
     if save_path is not None:
-        print(f'saving to {save_path}')
+        vprint(f'saving to {save_path}')
         im_stack = np.array([im_un, im_in, im_ov])
         if not os.path.exists(save_path):
                 os.makedirs(save_path)
@@ -129,7 +133,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         with open (save_path + 'params.txt', 'w') as text:
             text.write("defocus, del_px, EE, im_size (pix), thickness (nm)\n")
             text.write(f"def_val\t{def_val}\n")
-            text.write(f"del_px\t{del_px}\n") 
+            text.write(f"del_px (z) \t{del_px}\n") 
             text.write(f"scope En.\t{pscope.E}\n")        
             text.write(f"ims_size\t({dy},{dx})\n")
             text.write(f"isl_thk\t{isl_thk}\n") 
@@ -204,8 +208,16 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
     return (ephi, mphi)
 
 
+# ================================================================= #
+#            Simulating images from micromagnetic output            #
+# ================================================================= #
+
 def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1): 
     """ Load a .ovf or .omf file of magnetization values. 
+
+    This function takes magnetization output files from OOMMF or mumax, pulls 
+    some data from the header and returns 3D arrays for each magnetization 
+    component as well as the scales. 
 
     Args: 
         file: String. Path to file
@@ -226,13 +238,24 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
     """
     vprint = print if v>=1 else lambda *a, **k: None
 
-    data = np.genfromtxt(file)
-    with open(file) as f:
-        header = list(takewhile(lambda s: s[0]=='#', f))
+    with io.open(file, mode='r') as f:
+        try:
+            header = list(takewhile(lambda s: s[0]=='#', f))
+        except UnicodeDecodeError: #happens with binary files
+            header = []
+            with io.open(file, mode='rb') as f2:
+                for line in f2:
+                    if line.startswith('#'.encode()):
+                        header.append(line.decode())
+                    else:
+                        break
     if v >= 2:
         print(''.join(header))
 
+    dtype = None 
+    header_length = 0
     for line in header:
+        header_length += len(line)
         if line.startswith("# xnodes"):
             xsize = int(line.split(":",1)[1])
         if line.startswith("# ynodes"):
@@ -245,6 +268,15 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
             yscale = float(line.split(":",1)[1])
         if line.startswith("# zstepsize"):
             zscale = float(line.split(":",1)[1])
+        if line.startswith("# Begin: Data Text"):
+            vprint('Text file found')
+            dtype = "text" 
+        if line.startswith("# Begin: Data Binary 4"):
+            vprint('Binary 4 file found')
+            dtype = "bin4"
+        if line.startswith("# Begin: Data Binary 8"):
+            vprint('Binary 8 file found')
+            dtype = "bin8"
 
     if xsize is None or ysize is None or zsize is None: 
         print(textwrap.dedent(f"""\
@@ -252,33 +284,54 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
     Currently found size (x y z): ({xsize}, {ysize}, {zsize})"""))
         sys.exit(1)
     else:
-        vprint(f"Simulation size (x y z) is: ({xsize}, {ysize}, {zsize})")
+        vprint(f"Simulation size (z, y, x) : ({zsize}, {ysize}, {xsize})")
 
     if xscale is None or yscale is None or zscale is None: 
-        print(textwrap.dedent(f"""\
+        vprint(textwrap.dedent(f"""\
     Simulation scale not given. Expects keywords "xstepsize", "ystepsize, "zstepsize" for scale (nm/pixel).
-    Found scales (x y z): ({xscale}, {yscale}, {zscale})"""))
-        del_px = np.max([i for i in [xscale,yscale,zscale,0] if i is not None])
-        print(f"Proceeding with scale = {del_px} nm/pixel")
+    Found scales (z, y, x): ({zscale}, {yscale}, {xscale})"""))
+        del_px = np.max([i for i in [xscale,yscale,0] if i is not None])*1e9
+        if zscale is None:
+            zscale = del_px
+        else:
+            zscale *= 1e9
+        vprint(f"Proceeding with {del_px:.3g} nm/pixel for in-plane and {zscale:.3g} nm/pixel for out-of-plane.")
     else:
-        assert xscale == yscale == zscale
+        assert xscale == yscale
         del_px = xscale*1e9 # originally given in meters
-        vprint(f"Image scale is {del_px} nm/pixel.")
+        zscale *= 1e9
+        if zscale != del_px:
+            vprint(f"Image (x-y) scale : {del_px:.3g} nm/pixel.")
+            vprint(f"Out-of-plane (z) scale : {zscale:.3g} nm/pixel.")
+        else:
+            vprint(f"Image scale : {del_px:.3g} nm/pixel.")
+
+    if dtype == "text":
+        data = np.genfromtxt(file) #takes care of comments automatically
+    elif dtype == "bin4":
+        # for binaries have to give count or else will take comments at end as well
+        data = np.fromfile(file, dtype='f', count=xsize*ysize*zsize*3, offset=header_length+4)
+        print("little endian")
+    if dtype == "bin8":
+        data = np.fromfile(file, dtype='f', count=xsize*ysize*zsize*3, offset=header_length+8)
 
     reshaped = data.reshape((zsize, ysize, xsize, 3))
     if sim.lower() == 'oommf':
+        vprint('Scaling for OOMMF output.')
         mu0 = 4*np.pi*1e-7
-        mag_x = reshaped[0,:,:,0] * mu0
-        mag_y = reshaped[0,:,:,1] * mu0
-        mag_z = reshaped[0,:,:,2] * mu0
+        mag_x = reshaped[:,:,:,0] * mu0
+        mag_y = reshaped[:,:,:,1] * mu0 
+        mag_z = reshaped[:,:,:,2] * mu0
     elif sim.lower() == 'mumax': 
-        mag_x = reshaped[0,:,:,0] * Msat
-        mag_y = reshaped[0,:,:,1] * Msat
-        mag_z = reshaped[0,:,:,2] * Msat
+        vprint(f'Scaling for mumax output with Msat={Msat:.3g}.')
+        mag_x = reshaped[:,:,:,0] * Msat
+        mag_y = reshaped[:,:,:,1] * Msat
+        mag_z = reshaped[:,:,:,2] * Msat
     elif sim.lower() == 'raw':
-        mag_x = reshaped[0,:,:,0]
-        mag_y = reshaped[0,:,:,1]
-        mag_z = reshaped[0,:,:,2]
+        vprint('Not scaling output.')
+        mag_x = reshaped[:,:,:,0]
+        mag_y = reshaped[:,:,:,1]
+        mag_z = reshaped[:,:,:,2]
     else: 
         print(textwrap.dedent("""\
         Improper argument given for sim. Please set to one of the following options:
@@ -286,7 +339,84 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
             'mumax' : vectors all of magnitude 1, will be scaled by Msat
             'raw'   : vectors will not be scaled."""))
         sys.exit(1)
-    return(mag_x, mag_y, mag_z, del_px)
+    return(mag_x, mag_y, mag_z, del_px, zscale)
+
+
+def reconstruct_ovf(file=None, savename=None, save=False, sim='oommf', v=1, flip=True, shape=None, 
+    pscope=None, defval=0, theta_x=0, theta_y=0, Msat=1e4, sample_V0=10, sample_xip0=50, mem_V0=10, mem_xip0=1000,
+    add_random=0,  sym=False, qc=False):
+    """
+
+    Ignores the phase shift through the substrate--assuming uniform just adds an
+    offset to the electrostatic phase shift
+
+    takes a microscope object in, show how to view all microscope params
+
+    steps: 
+        load ovf
+        calculate e-phase, m-phase
+        calculate stack, or full with flip stack of images 
+        reconstruct them
+
+    images to save  
+        simulated phase shifts (2)
+        simulated image stack
+        reconstructed color image, reconstructed magnetization components
+
+    args: 
+        file:
+        sim:
+        v:
+        Msat:
+        V0: Float. Mean inner potential of sample (V). Default 20. 
+        xip0: Float. Extinction distance (nm). Default 50. 
+
+    """
+    directory, filename = os.path.split(file)
+    if savename is None:
+        savename = os.path.splitext(filename)[0]
+
+    mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim=sim, v=v, Msat=Msat)
+
+    phi0 = 2.07e7 #Gauss*nm^2 
+    pre_B = 2*np.pi*Msat/phi0*zscale**2 #1/px^2
+    if shape is None:
+        shape = np.ones(mag_x.shape)
+
+    ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=shape, v=v,
+                           theta_x=theta_x, theta_y=theta_y, pre_B=pre_B, pre_E=pscope.sigma*V0)
+
+    if save <= 1:
+        save_path = None
+    else:
+        save_path = os.path.join(directory, savename)
+
+    Tphi, im_un, im_in, im_ov = sim_images(mphi=mphi, ephi=ephi, pscope=pscope, isl_shape=shape,
+                          del_px = del_px, def_val=defval, isl_xip0=xip0,
+                          add_random=add_random, v=v,
+                          save_path=save_path)
+
+    if flip: 
+        Tphi_flip, im_un_flip, im_in_flip, im_ov_flip = sim_images(mphi=-mphi, ephi=ephi, pscope=pscope,
+                              del_px = del_px, def_val=defval, add_random=add_random, v=v)
+
+    if v >= 2:
+        print("Displaying unflipped images.")
+        show_sims(Tphi, im_un, im_in, im_ov)
+        print("Displaying flipped images.")
+        show_sims(Tphi_flip, im_un_flip, im_in_flip, im_ov_flip)
+
+    if flip: 
+        blah
+    else:
+        ptie = TIE_params(imstack=[im_un, im_in, im_ov], defvals=[defval], 
+            flip=False, no_mask=True, data_loc=directory)
+
+
+
+
+
+    return 
 
 
 # ================================================================= #

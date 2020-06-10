@@ -12,8 +12,9 @@ Modified, CD Phatak, ANL, 22.May.2016.
 
 import numpy as np
 from TIE_helper import *
+import time
 
-def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=1.0):
+def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=1.0, v=1):
     """Applies linear supeposition principle for 3D reconstruction of magnetic and electrostatic phase shifts.
 
     This function will take the 3D arrays with Mx, My and Mz components of the magnetization
@@ -23,9 +24,9 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
     real space values are returned.
 
     Args: 
-        mx: 3D array. x component of magnetization at each voxel
-        my: 3D array. y component of magnetization at each voxel
-        mz: 3D array. z component of magnetization at each voxel
+        mx: 3D array. x component of magnetization at each voxel (z,y,x)
+        my: 3D array. y component of magnetization at each voxel (z,y,x)
+        mz: 3D array. z component of magnetization at each voxel (z,y,x)
         Dshp: 3D array. Binary shape function of the object. 1 inside, 0 outside
         theta_x: Float. Rotation around x-axis (degrees) 
         theta_y: Float. Rotation around y-axis (degrees) 
@@ -35,15 +36,16 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
             quantum. 
         pre_E: Float. Prefactor for unit conversion in calculating the 
             electrostatic phase shift. Equal to sigma*V0, where sigma is the 
-            interaction constant of the given TEM accelerating voltage (is an 
+            interaction constant of the given TEM accelerating voltage (an 
             attribute of the microscope class), and V0 the mean inner potential.
-
+        v: Int. Verbosity. v >= 1 will print progress, v=0 to suppress all prints.
     Returns: [ephi, mphi]
         ephi: Electrostatic phase shift, 2D array
         mphi: magnetic phase shift, 2D array
     """
+    vprint = print if v>=1 else lambda *a, **k: None
 
-    [ysz,xsz,zsz] = mx.shape
+    [zsz,ysz,xsz] = mx.shape
     dim = xsz #Assuming same dimensions along X and Y
     d2 = dim//2
     if zsz > 1:
@@ -71,13 +73,16 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
     ephi_k = np.zeros(KK.shape,dtype=complex)
     
     #Trying to use nonzero elements in Dshape to limit the iterations.
-    (Jn, In,Kn) = np.where(Dshp != 0)
+    (Kn, Jn, In) = np.where(Dshp != 0)
     
     nelems = In.size
-    print('nelems = ', nelems)
+    vprint('nelems = ', nelems)
+    stime = time.time()
+    vprint('0.00%')
     for nn in range(nelems):
-        if nn % 1000 == 0:
-            print('{:.3}%'.format(nn/nelems*100))
+        if time.time() - stime >= 5:
+            vprint('{:.2f}%'.format(nn/nelems*100))
+            stime = time.time()
         # Compute the rotation angles
         st = np.sin(np.deg2rad(theta_x))
         ct = np.cos(np.deg2rad(theta_x))
@@ -91,16 +96,16 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
         i_n = np.float(i) * cg + np.float(j) * sg * st + np.float(k) * sg * ct
         j_n = np.float(j) * ct - np.float(k) * st
 
-        mx_n = mx[Jn[nn],In[nn],Kn[nn]] * cg + my[Jn[nn],In[nn],Kn[nn]] * sg * st + mz[Jn[nn],In[nn],Kn[nn]] * sg * ct
-        my_n = my[Jn[nn],In[nn],Kn[nn]] * ct - mz[Jn[nn],In[nn],Kn[nn]] * st
+        mx_n = mx[Kn[nn],Jn[nn],In[nn]] * cg + my[Kn[nn],Jn[nn],In[nn]] * sg * st + mz[Kn[nn],Jn[nn],In[nn]] * sg * ct
+        my_n = my[Kn[nn],Jn[nn],In[nn]] * ct - mz[Kn[nn],Jn[nn],In[nn]] * st
 
         # compute the expontential summation
         sum_term = np.exp(-1j * (KX * j_n + KY * i_n))
         # add to ephi
-        ephi_k += sum_term * Dshp[Jn[nn],In[nn],Kn[nn]]
+        ephi_k += sum_term * Dshp[Kn[nn],Jn[nn],In[nn]]
         # add to mphi
         mphi_k += sum_term * (my_n * Sy - mx_n * Sx)
-
+    vprint('100.00%')
     #Now we have the phases in K-space. We convert to real space and return
     ephi_k[zinds] = 0.0
     mphi_k[zinds] = 0.0
