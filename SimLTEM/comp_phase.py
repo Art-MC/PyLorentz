@@ -24,9 +24,9 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
     real space values are returned.
 
     Args: 
-        mx: 3D array. x component of magnetization at each voxel (z,y,x)
-        my: 3D array. y component of magnetization at each voxel (z,y,x)
-        mz: 3D array. z component of magnetization at each voxel (z,y,x)
+        mx: 3D array. x component of magnetization at each voxel (z,y,x) (gauss)
+        my: 3D array. y component of magnetization at each voxel (z,y,x) (gauss)
+        mz: 3D array. z component of magnetization at each voxel (z,y,x) (gauss)
         Dshp: 3D array. Binary shape function of the object. 1 inside, 0 outside
         theta_x: Float. Rotation around x-axis (degrees) 
         theta_y: Float. Rotation around y-axis (degrees) 
@@ -76,11 +76,11 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
     (Kn, Jn, In) = np.where(Dshp != 0)
     
     nelems = In.size
-    vprint('nelems = ', nelems)
+    vprint(f'Beginning phase calculation for {nelems:g} voxels.')
     stime = time.time()
     vprint('0.00%')
     for nn in range(nelems):
-        if time.time() - stime >= 5:
+        if time.time() - stime >= 15:
             vprint('{:.2f}%'.format(nn/nelems*100))
             stime = time.time()
         # Compute the rotation angles

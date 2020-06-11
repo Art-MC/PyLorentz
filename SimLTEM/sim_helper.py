@@ -24,6 +24,9 @@ from TIE_helper import *
 import textwrap
 from itertools import takewhile
 import io 
+from TIE_reconstruct import TIE
+import skimage.external.tifffile as tifffile
+
 
 
 # ================================================================= #
@@ -31,7 +34,7 @@ import io
 # ================================================================= #
 
 def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1, 
-    def_val=0, add_random=False, save_path=None,
+    def_val=0, add_random=False, save_path=None, save_name=None,
     isl_thk=20, isl_xip0=50, mem_thk=50, mem_xip0=1000, v=1):
     """Simulate LTEM images for a given electron phase shift through a sample. 
 
@@ -52,7 +55,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         mphi: 2D array (M, N). magnetic phase shift
         ephi: 2D array (M, N). Electrostatic phase shift
         pscope: Microscope object. Set appropriate parameters. 
-        isl_shape: 2D or 3D float array (M, N, Z). If 2D the thickness will be
+        isl_shape: 2D or 3D float array (z,y,x). If 2D the thickness will be
             taken as the isl_shape values multiplied by isl_thickness. If 3D, the 
             isl_shape array will be summed along the z access becoming 2D. 
             Default None -> uniform flat material with thickness = isl_thk. 
@@ -64,6 +67,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         save_path: String. Will save a stack [underfocus, infocus, overfocus] as
             well as (mphi+ephi) as tiffs along with a params.text file. 
             Default None: Does not save. 
+        save_name: String. Name prepended to saved files. 
         v: Int. Verbosity, set v=0 to suppress print statements. 
     Material Parameter Args:
         isl_thk: Float. Island thickness (nm). Default 20. 
@@ -80,7 +84,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
     vprint = print if v>=1 else lambda *a, **k: None
     
     Tphi = mphi + ephi
-    vprint(f'Total fov is ({np.shape(Tphi)[1]*del_px},{np.shape(Tphi)[0]*del_px}) nm')
+    vprint(f'Total fov is ({np.shape(Tphi)[1]*del_px:.3g},{np.shape(Tphi)[0]*del_px:.3g}) nm')
     dy, dx = Tphi.shape
 
     if add_random:
@@ -92,9 +96,6 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         ran_phi *= np.max(ephi)
         Tphi += ran_phi
 
-    thk2 = isl_thk/del_px #thickness in pixels 
-    qq = dist(dy, dx, shift=True)
-
     #amplitude
     if isl_shape is None:
         thk_map = np.ones(Tphi.shape)*isl_thk
@@ -102,12 +103,12 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         if type(isl_shape) != np.ndarray:
             isl_shape = np.array(isl_shape)
         if isl_shape.ndim == 3:
-            thk_map = np.sum(isl_shape, axis=2)*isl_thk
+            thk_map = np.sum(isl_shape, axis=0)*isl_thk
         elif isl_shape.ndim == 2:
             thk_map = isl_shape*isl_thk
         else:
             vprint(textwrap.dedent(f"""
-                Mask given must be 2D (y,x) or 3D (y,x,z) array. 
+                Mask given must be 2D (y,x) or 3D (z,y,x) array. 
                 It was given as a {isl_shape.ndim} dimension array."""))
             sys.exit(1)
 
@@ -115,6 +116,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
     ObjWave = Amp * (np.cos(Tphi) + 1j * np.sin(Tphi))
 
     # compute unflipped images
+    qq = dist(dy, dx, shift=True)
     pscope.defocus = 0.0
     im_in = pscope.getImage(ObjWave,qq,del_px)
     pscope.defocus = -def_val
@@ -127,20 +129,26 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         im_stack = np.array([im_un, im_in, im_ov])
         if not os.path.exists(save_path):
                 os.makedirs(save_path)
-        skimage_io.imsave(save_path + 'align.tiff', im_stack.astype('float32'),plugin='tifffile')
-        skimage_io.imsave(save_path + 'phase.tiff', Tphi.astype('float32'),plugin='tifffile')
+        res = 1/del_px
+        tifffile.imsave(os.path.join(save_path, f'{save_name}_align.tiff'), im_stack.astype('float32'), 
+            imagej = True,
+            resolution = (res, res),
+            metadata={'unit': 'nm'})
+        tifffile.imsave(os.path.join(save_path, f'{save_name}_phase.tiff'), Tphi.astype('float32'), 
+            imagej = True,
+            resolution = (res, res),
+            metadata={'unit': 'nm'})
 
-        with open (save_path + 'params.txt', 'w') as text:
-            text.write("defocus, del_px, EE, im_size (pix), thickness (nm)\n")
-            text.write(f"def_val\t{def_val}\n")
-            text.write(f"del_px (z) \t{del_px}\n") 
-            text.write(f"scope En.\t{pscope.E}\n")        
-            text.write(f"ims_size\t({dy},{dx})\n")
-            text.write(f"isl_thk\t{isl_thk}\n") 
-            text.write(f"isl_xip0\t{isl_xip0}\n") 
-            text.write(f"mem_thk\t{mem_thk}\n") 
-            text.write(f"mem_xip0\t{mem_xip0}\n") 
-            text.write(f"add_random\t{add_random}\n") 
+        with io.open(os.path.join(save_path, f'{save_name}_params.txt'), 'w') as text:
+            text.write(f"def_val (nm) \t{def_val:g}\n")
+            text.write(f"del_px (nm/pix) \t{del_px:g}\n") 
+            text.write(f"scope En. (V) \t{pscope.E:g}\n")        
+            text.write(f"im_size (pix) \t({dy:g},{dx:g})\n")
+            text.write(f"sample_thk (nm) \t{isl_thk:g}\n") 
+            text.write(f"sample_xip0 (nm) \t{isl_xip0:g}\n") 
+            text.write(f"mem_thk (nm) \t{mem_thk:g}\n") 
+            text.write(f"mem_xip0 (nm) \t{mem_xip0:g}\n") 
+            text.write(f"add_random \t{add_random:g}\n") 
 
     return (Tphi, im_un, im_in, im_ov)
 
@@ -224,7 +232,7 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
         sim: String. "OOMMF" or "mumax". OOMMF simulation gives outputs in 
             A/m while mumax is scaled between 0 and 1, and therefore must be
             multiplied by Msat. Setting sim=="raw" will give unscaled values.
-        Msat: Float. Saturation magnetization. Only relevant if sim=="mumax"
+        Msat: Float. Saturation magnetization only relevant if sim=="mumax"
         v: Int. Verbosity. 
             0 : No output
             1 : Default output
@@ -250,7 +258,10 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
                     else:
                         break
     if v >= 2:
-        print(''.join(header))
+        ext = os.path.splitext(file)[1]
+        print(f"-----Start {ext} Header:-----")
+        print(''.join(header).strip())
+        print(f"------End {ext} Header:------\n")
 
     dtype = None 
     header_length = 0
@@ -317,21 +328,14 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
 
     reshaped = data.reshape((zsize, ysize, xsize, 3))
     if sim.lower() == 'oommf':
-        vprint('Scaling for OOMMF output.')
+        vprint('Scaling for OOMMF datafile.')
         mu0 = 4*np.pi*1e-7
-        mag_x = reshaped[:,:,:,0] * mu0
-        mag_y = reshaped[:,:,:,1] * mu0 
-        mag_z = reshaped[:,:,:,2] * mu0
+        reshaped *= mu0
     elif sim.lower() == 'mumax': 
-        vprint(f'Scaling for mumax output with Msat={Msat:.3g}.')
-        mag_x = reshaped[:,:,:,0] * Msat
-        mag_y = reshaped[:,:,:,1] * Msat
-        mag_z = reshaped[:,:,:,2] * Msat
+        vprint(f'Scaling for mumax datafile with Msat={Msat:.3g}.')
+        reshaped *= Msat
     elif sim.lower() == 'raw':
-        vprint('Not scaling output.')
-        mag_x = reshaped[:,:,:,0]
-        mag_y = reshaped[:,:,:,1]
-        mag_z = reshaped[:,:,:,2]
+        vprint('Not scaling datafile.')
     else: 
         print(textwrap.dedent("""\
         Improper argument given for sim. Please set to one of the following options:
@@ -339,12 +343,17 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
             'mumax' : vectors all of magnitude 1, will be scaled by Msat
             'raw'   : vectors will not be scaled."""))
         sys.exit(1)
+
+    mag_x = reshaped[:,:,:,0]
+    mag_y = reshaped[:,:,:,1]
+    mag_z = reshaped[:,:,:,2]
+    
     return(mag_x, mag_y, mag_z, del_px, zscale)
 
 
-def reconstruct_ovf(file=None, savename=None, save=False, sim='oommf', v=1, flip=True, shape=None, 
-    pscope=None, defval=0, theta_x=0, theta_y=0, Msat=1e4, sample_V0=10, sample_xip0=50, mem_V0=10, mem_xip0=1000,
-    add_random=0,  sym=False, qc=False):
+def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=True, calc_region=None, thk_map=None, 
+    pscope=None, defval=0, theta_x=0, theta_y=0, Msat=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000,
+    add_random=0, sym=False, qc=None):
     """
 
     Ignores the phase shift through the substrate--assuming uniform just adds an
@@ -368,55 +377,82 @@ def reconstruct_ovf(file=None, savename=None, save=False, sim='oommf', v=1, flip
         sim:
         v:
         Msat:
+        calc_region: Region for which to calculate the phase shift - to speed up computation time. Given as 3d
+            array, but really should be 
+        thk_map: Either 2D array (y,x) of thickness values as factor of total thickness (zscale*zsize).
+            defaults to none. 
+        save: int. How much info you want to save
+            0: Saves nothing, still returns results. 
+            1: Saves simulated images, simulated phase shift, and reconstructed 
+                magnetizations, both the color image and x/y components. 
+            2: Saves simulated images, simulated phase shift, and all 
+                reconstruction TIE images. 
+        savename: String. Name added to saving
         V0: Float. Mean inner potential of sample (V). Default 20. 
         xip0: Float. Extinction distance (nm). Default 50. 
 
     """
     directory, filename = os.path.split(file)
+    directory = os.path.abspath(directory)
     if savename is None:
         savename = os.path.splitext(filename)[0]
 
     mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim=sim, v=v, Msat=Msat)
+    (zsize, ysize, xsize) = mag_x.shape
 
     phi0 = 2.07e7 #Gauss*nm^2 
     pre_B = 2*np.pi*Msat/phi0*zscale**2 #1/px^2
-    if shape is None:
-        shape = np.ones(mag_x.shape)
+    if calc_region is None:
+        calc_region = np.ones(mag_x.shape)
+    
+    ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=calc_region, v=v,
+                           theta_x=theta_x, theta_y=theta_y, pre_B=pre_B, pre_E=pscope.sigma*sample_V0)
 
-    ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=shape, v=v,
-                           theta_x=theta_x, theta_y=theta_y, pre_B=pre_B, pre_E=pscope.sigma*V0)
-
-    if save <= 1:
+    if save < 1:
         save_path = None
+        TIE_save = False
     else:
-        save_path = os.path.join(directory, savename)
-
-    Tphi, im_un, im_in, im_ov = sim_images(mphi=mphi, ephi=ephi, pscope=pscope, isl_shape=shape,
-                          del_px = del_px, def_val=defval, isl_xip0=xip0,
-                          add_random=add_random, v=v,
-                          save_path=save_path)
-
+        save_path = os.path.join(directory, 'sim_tfs')
+        if save < 2:
+            TIE_save = 'b'
+        else:
+            TIE_save = True
+  
+    thk = zsize * zscale
+    sim_name = savename
     if flip: 
-        Tphi_flip, im_un_flip, im_in_flip, im_ov_flip = sim_images(mphi=-mphi, ephi=ephi, pscope=pscope,
-                              del_px = del_px, def_val=defval, add_random=add_random, v=v)
+        sim_name = savename+'_flip'
+        Tphi_flip, im_un_flip, im_in_flip, im_ov_flip = sim_images(mphi= -1*mphi, ephi=ephi, isl_shape=thk_map, 
+            pscope=pscope, del_px = del_px, def_val=defval, add_random=add_random,
+            isl_thk=thk, isl_xip0=sample_xip0, mem_thk=mem_thk, mem_xip0=mem_xip0,
+            v=v, save_path=save_path, save_name=sim_name)
+        sim_name = savename+'_unflip'
+
+    Tphi, im_un, im_in, im_ov = sim_images(mphi=mphi, ephi=ephi, isl_shape=thk_map, 
+        pscope=pscope, del_px = del_px, def_val=defval, add_random=add_random,
+        isl_thk=thk, isl_xip0=sample_xip0, mem_thk=mem_thk, mem_xip0=mem_xip0,
+        v=v, save_path=save_path, save_name=sim_name)
 
     if v >= 2:
-        print("Displaying unflipped images.")
+        print("Displaying unflipped images:")
         show_sims(Tphi, im_un, im_in, im_ov)
-        print("Displaying flipped images.")
-        show_sims(Tphi_flip, im_un_flip, im_in_flip, im_ov_flip)
+        if flip: 
+            print("Displaying flipped images:")
+            show_sims(Tphi_flip, im_un_flip, im_in_flip, im_ov_flip)
 
     if flip: 
-        blah
+        ptie = TIE_params(imstack=[im_un, im_in, im_ov], flipstack=[im_un_flip, im_in_flip, im_ov_flip], 
+            defvals=[defval], flip=True, no_mask=True, data_loc=directory, v=0) 
+        ptie.set_scale(del_px)
     else:
-        ptie = TIE_params(imstack=[im_un, im_in, im_ov], defvals=[defval], 
-            flip=False, no_mask=True, data_loc=directory)
+        ptie = TIE_params(imstack=[im_un, im_in, im_ov], flipstack=[], defvals=[defval], 
+            flip=False, no_mask=True, data_loc=directory, v=0) 
+        ptie.set_scale(del_px)
 
-
-
-
-
-    return 
+    results = TIE(i=0, ptie=ptie, pscope=pscope, dataname=savename, sym=sym,
+                    qc=qc, save=TIE_save, v=v)
+    
+    return results 
 
 
 # ================================================================= #

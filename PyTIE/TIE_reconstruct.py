@@ -497,7 +497,8 @@ def save_results(defval, results, ptie, dataname, sym, qc, save, v, directory = 
             save = 'b'     ->  save just bx, by, and color_b
             save = 'color' ->  saves just color_b
         v: Int. Verbosity. 
-            1 : Default output (none)
+            0 : Suppressed output. 
+            1 : Default output 
             2 : Extended output, prints files as saving. 
         directory: String. The directory name to store the saved files. If 
             default (None) saves to ptie.data_loc/Images/ 
@@ -508,14 +509,14 @@ def save_results(defval, results, ptie, dataname, sym, qc, save, v, directory = 
     if long_deriv:
         defval = 'long'
 
-    print('Saving images')
+    if v >= 1: 
+        print('Saving images')
     if save == 'b':
         b_keys = ['bxt', 'byt', 'color_b']
     elif save == 'color': 
         b_keys = ['color_b']
     
-    # for some reason imagej scale requires an int
-    res = np.int(1/ptie.scale) 
+    res = 1/ptie.scale 
     if not dataname.endswith('_'):
         dataname += '_'
     
@@ -541,13 +542,13 @@ def save_results(defval, results, ptie, dataname, sym, qc, save, v, directory = 
         else: 
             im = value.astype('float32')
         
-        save_name = dataname + str(defval)+'_' + key + '.tiff'
+        save_name = f"{dataname}{defval:g}_{key}.tiff"
         if v >= 2: 
             print(f'Saving {os.path.join(Path(save_path).absolute(), save_name)}.tiff')
         tifffile.imsave(os.path.join(save_path, save_name), im, 
             imagej = True,
             resolution = (res, res),
-            metadata={'unit': 'um'})
+            metadata={'unit': 'nm'})
 
     # make a txt file with parameters: 
     with open(os.path.join(save_path, dataname + "recon_params.txt"), "w") as txt:

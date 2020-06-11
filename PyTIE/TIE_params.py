@@ -59,7 +59,7 @@ class TIE_params(object):
         mask: Binary mask made form all the images. 1 where all images have
             nonzero data, 0 where any do not. Made by self.make_mask()
     """
-    def __init__(self, imstack=None, flipstack=[], defvals=None, flip=None, data_loc=None, no_mask=False):
+    def __init__(self, imstack=None, flipstack=[], defvals=None, flip=None, data_loc=None, no_mask=False, v=1):
         """Inits TIE_params object. imstack, defvals must be specified at minimum.
 
         Args: 
@@ -76,7 +76,12 @@ class TIE_params(object):
                 the unflip stack if self.flip = False. 
             data_loc: String for location of data folder.
             no_mask: Bool. If True, does not make mask for images. 
+            v: Int. Verbosity. 
+                0 : No output
+                1 : Default output
         """
+        vprint = print if v>=1 else lambda *a, **k: None
+
         if type(imstack) == list:
             pass
         else:
@@ -109,7 +114,7 @@ class TIE_params(object):
                 for arr in flipstack:
                     nflipimstack.append(hs.signals.Signal2D(arr))
                 self.flipstack = nflipimstack
-            print("Data not given in hyperspy signal class. You likely need to set ptie.scale (nm/pix).")
+            vprint("Data not given in hyperspy signal objects. You likely need to set ptie.scale (nm/pix).")
 
         infocus = self.imstack[self.num_files//2] # unflip infocus dm3
         self.axes = infocus.axes_manager # dm3 axes manager
@@ -118,7 +123,7 @@ class TIE_params(object):
         scale_x = self.axes[1].scale 
         assert scale_y == scale_x
         self.scale = scale_y
-        print('Given scale: {:.4f} nm/pix\n'.format(self.imstack[0].axes_manager[0].scale))
+        vprint('Given scale: {:.4f} nm/pix\n'.format(self.imstack[0].axes_manager[0].scale))
 
         if flip is not None:
             self.flip = flip
@@ -308,7 +313,9 @@ class TIE_params(object):
         """Change the scale of the images (nm/pix) in the relevant places."""
         self.axes[0].scale = scale
         self.axes[1].scale = scale
-        for sig in self.imstack + self.flipstack: 
+        for sig in self.imstack + self.flipstack:
+            sig.axes_manager[0].units = 'nm'
+            sig.axes_manager[1].units = 'nm'
             sig.axes_manager[0].scale = scale
             sig.axes_manager[1].scale = scale
 
