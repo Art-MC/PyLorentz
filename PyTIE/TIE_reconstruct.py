@@ -43,7 +43,7 @@ def TIE(i=-1, ptie=None, pscope=None, dataname='', sym=False, qc=None, save=Fals
             is 4x as large). Default False.
         qc: Float. The Tikhonov frequency to use as filter, or "percent" to use 
             15% of q, Default None. If you use a Tikhonov filter the resulting 
-            magnetization is no longer quantitative!
+            magnetization is no longer quantitative
         save: Bool or string. Whether you want to save the output. Default False. 
             save = True    ->  saves all images. 
             save = 'b'     ->  save just bx, by, and color_b
@@ -95,9 +95,9 @@ def TIE(i=-1, ptie=None, pscope=None, dataname='', sym=False, qc=None, save=Fals
     else:
         defval = ptie.defvals[i]
         if ptie.flip:
-            vprint('Aligning for defocus value: ', defval, ' with both flip/unflip tfs.')
+            vprint(f'Aligning for defocus value: {defval:g}, with both flip/unflip tfs.')
         else:
-            vprint('Aligning for defocus value: ', defval, ' with only unflip tfs.')
+            vprint(f'Aligning for defocus value: {defval:g}, with only unflip tfs.')
 
     right, left = ptie.crop['right']  , ptie.crop['left']
     bottom, top = ptie.crop['bottom'] , ptie.crop['top']
@@ -307,7 +307,7 @@ def SITIE(ptie=None, pscope=None, dataname='', sym=False, qc=None, save=True, i=
             defval = defvals[i]
         else:
             defval = ptie.defvals[0]
-        vprint(f'SITIE defocus: {defval} nm')
+        vprint(f'SITIE defocus: {defval:g} nm')
 
     right, left = ptie.crop['right']  , ptie.crop['left']
     bottom, top = ptie.crop['bottom'] , ptie.crop['top']

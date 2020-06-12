@@ -14,7 +14,7 @@ import numpy as np
 from TIE_helper import *
 import time
 
-def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=1.0, v=1):
+def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=1.0, v=1):
     """Applies linear supeposition principle for 3D reconstruction of magnetic and electrostatic phase shifts.
 
     This function will take the 3D arrays with Mx, My and Mz components of the magnetization
@@ -73,6 +73,8 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=1.0, theta_x=0.0, theta_y=0.0, pre_B=
     ephi_k = np.zeros(KK.shape,dtype=complex)
     
     #Trying to use nonzero elements in Dshape to limit the iterations.
+    if Dshp is None: 
+        Dshp = np.ones(mx.shape)
     (Kn, Jn, In) = np.where(Dshp != 0)
     
     nelems = In.size

@@ -1,7 +1,8 @@
 """Helper functions for simulating LTEM images. 
 
-An assortment of helper functions broadly divided into three sections. 
+An assortment of helper functions broadly divided into four sections. 
     1) Simulating images from phase shifts
+    2) Processing and simulating micromagnetic outputs
     2) Helper functions for displaying vector fields
     3) Generating variations of magnetic vortex/skyrmion states
 
@@ -54,7 +55,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
     Args:
         mphi: 2D array (M, N). magnetic phase shift
         ephi: 2D array (M, N). Electrostatic phase shift
-        pscope: Microscope object. Set appropriate parameters. 
+        pscope: Microscope object. Contains accelerating voltage, aberations, etc. 
         isl_shape: 2D or 3D float array (z,y,x). If 2D the thickness will be
             taken as the isl_shape values multiplied by isl_thickness. If 3D, the 
             isl_shape array will be summed along the z access becoming 2D. 
@@ -62,7 +63,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         del_px: Float. Scale factor (nm/pixel). Default = 1. 
         def_val: Float. The defocus values at which to calculate the images .
         add_random: Bool or Float. Whether or not to add amorphous background to
-            the simulation. True or 1 will add the default background, any 
+            the simulation. True or 1 will add a default background, any 
             other value will be multiplied to scale the additional phase term. 
         save_path: String. Will save a stack [underfocus, infocus, overfocus] as
             well as (mphi+ephi) as tiffs along with a params.text file. 
@@ -93,7 +94,8 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
         ran_phi = np.random.uniform(low = -np.pi/128*add_random,
                                     high = np.pi/128*add_random,
                                     size=[dy,dx])
-        ran_phi *= np.max(ephi)
+        if np.max(ephi) > 1: # scale by ephi only if it's given and relevant
+            ran_phi *= np.max(ephi)
         Tphi += ran_phi
 
     #amplitude
@@ -203,7 +205,7 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
         if type(isl_shape) != np.ndarray:
             isl_shape = np.array(isl_shape)
         if isl_shape.ndim == 3:
-            thk_map = np.sum(isl_shape, axis=2)*isl_thk
+            thk_map = np.sum(isl_shape, axis=0)*isl_thk
         elif isl_shape.ndim == 2:
             thk_map = isl_shape*isl_thk
         else:
@@ -225,14 +227,14 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
 
     This function takes magnetization output files from OOMMF or mumax, pulls 
     some data from the header and returns 3D arrays for each magnetization 
-    component as well as the scales. 
+    component as well as the pixel resolutions. 
 
     Args: 
         file: String. Path to file
         sim: String. "OOMMF" or "mumax". OOMMF simulation gives outputs in 
             A/m while mumax is scaled between 0 and 1, and therefore must be
-            multiplied by Msat. Setting sim=="raw" will give unscaled values.
-        Msat: Float. Saturation magnetization only relevant if sim=="mumax"
+            multiplied by Msat. Setting sim="raw" will give unscaled values.
+        Msat: Float. Saturation magnetization (gauss). Only relevant if sim=="mumax"
         v: Int. Verbosity. 
             0 : No output
             1 : Default output
@@ -242,7 +244,8 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
         mag_x: 2D array. x-component of magnetization. 
         mag_y: 2D array. y-component of magnetization. 
         mag_z: 2D array. z-component of magnetization. 
-        del_px: Float. Scale of images (nm/pixel)
+        del_px: Float. Scale of datafile in y/x direction (nm/pixel)
+        zscale: Float. Scale of datafile in z-direction (nm/pixel)
     """
     vprint = print if v>=1 else lambda *a, **k: None
 
@@ -261,7 +264,7 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
         ext = os.path.splitext(file)[1]
         print(f"-----Start {ext} Header:-----")
         print(''.join(header).strip())
-        print(f"------End {ext} Header:------\n")
+        print(f"------End {ext} Header:------")
 
     dtype = None 
     header_length = 0
@@ -291,7 +294,8 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
 
     if xsize is None or ysize is None or zsize is None: 
         print(textwrap.dedent(f"""\
-    Simulation dimensions are not given. Expects keywords "xnodes", "ynodes, "znodes" for number of cells.
+    Simulation dimensions are not given. \
+    Expects keywords "xnodes", "ynodes, "znodes" for number of cells.
     Currently found size (x y z): ({xsize}, {ysize}, {zsize})"""))
         sys.exit(1)
     else:
@@ -299,14 +303,16 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
 
     if xscale is None or yscale is None or zscale is None: 
         vprint(textwrap.dedent(f"""\
-    Simulation scale not given. Expects keywords "xstepsize", "ystepsize, "zstepsize" for scale (nm/pixel).
+    Simulation scale not given. \
+    Expects keywords "xstepsize", "ystepsize, "zstepsize" for scale (nm/pixel).
     Found scales (z, y, x): ({zscale}, {yscale}, {xscale})"""))
         del_px = np.max([i for i in [xscale,yscale,0] if i is not None])*1e9
         if zscale is None:
             zscale = del_px
         else:
             zscale *= 1e9
-        vprint(f"Proceeding with {del_px:.3g} nm/pixel for in-plane and {zscale:.3g} nm/pixel for out-of-plane.")
+        vprint(f"Proceeding with {del_px:.3g} nm/pixel for in-plane and \
+            {zscale:.3g} nm/pixel for out-of-plane.")
     else:
         assert xscale == yscale
         del_px = xscale*1e9 # originally given in meters
@@ -320,11 +326,13 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
     if dtype == "text":
         data = np.genfromtxt(file) #takes care of comments automatically
     elif dtype == "bin4":
-        # for binaries have to give count or else will take comments at end as well
+        # for binaries it has to give count or else will take comments at end as well
         data = np.fromfile(file, dtype='f', count=xsize*ysize*zsize*3, offset=header_length+4)
-        print("little endian")
-    if dtype == "bin8":
+    elif dtype == "bin8":
         data = np.fromfile(file, dtype='f', count=xsize*ysize*zsize*3, offset=header_length+8)
+    else: 
+        print("Unkown datatype given. Exiting.")
+        sys.exit(1)
 
     reshaped = data.reshape((zsize, ysize, xsize, 3))
     if sim.lower() == 'oommf':
@@ -351,46 +359,82 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
     return(mag_x, mag_y, mag_z, del_px, zscale)
 
 
-def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=True, calc_region=None, thk_map=None, 
-    pscope=None, defval=0, theta_x=0, theta_y=0, Msat=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000,
+def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=True,
+    calc_region=None, thk_map=None, pscope=None, defval=0, theta_x=0, theta_y=0, 
+    Msat=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000, 
     add_random=0, sym=False, qc=None):
-    """
+    """Load a micromagnetic output file and reconstruct simulated LTEM images. 
 
-    Ignores the phase shift through the substrate--assuming uniform just adds an
-    offset to the electrostatic phase shift
+    This is an "all-in-one" function that takes a magnetization datafile, 
+    material parameters, and imaging conditions to simulate LTEM images and 
+    reconstruct them.
 
-    takes a microscope object in, show how to view all microscope params
+    The image simulation step uses the linear superposition method for deteriming
+    phase shift, which allows for 3d magnetization inputs and tilting the sample. 
+    A substrate can be accounted for as well, though it is assumed to be uniform
+    and non-magnetic, i.e. applying a uniform phase shift. 
 
-    steps: 
-        load ovf
-        calculate e-phase, m-phase
-        calculate stack, or full with flip stack of images 
-        reconstruct them
+    Imaging parameters are defined by the defocus value, tilt angles, and microscope
+    object which contains accelerating voltage, aberrations, etc. 
 
-    images to save  
-        simulated phase shifts (2)
-        simulated image stack
-        reconstructed color image, reconstructed magnetization components
-
-    args: 
-        file:
-        sim:
-        v:
-        Msat:
-        calc_region: Region for which to calculate the phase shift - to speed up computation time. Given as 3d
-            array, but really should be 
-        thk_map: Either 2D array (y,x) of thickness values as factor of total thickness (zscale*zsize).
-            defaults to none. 
-        save: int. How much info you want to save
+    Args: 
+        file: String. Path to file. 
+        savename: String. Name prepended to saved files. If None -> filename
+        save: Int. Controls which files are saved. 
             0: Saves nothing, still returns results. 
-            1: Saves simulated images, simulated phase shift, and reconstructed 
-                magnetizations, both the color image and x/y components. 
+            1: Default. Saves simulated images, simulated phase shift, and 
+                reconstructed magnetizations, both the color image and x/y components. 
             2: Saves simulated images, simulated phase shift, and all 
-                reconstruction TIE images. 
-        savename: String. Name added to saving
-        V0: Float. Mean inner potential of sample (V). Default 20. 
-        xip0: Float. Extinction distance (nm). Default 50. 
+                reconstruction TIE images.
+        sim: String. "OOMMF", "mumax" or "raw". OOMMF simulation gives outputs in 
+            A/m while mumax is scaled between 0 and 1, and therefore must be
+            multiplied by Msat. Setting sim="raw" will pass unscaled values.
+        v: Int. Verbosity control. 
+            0: All output suppressed. 
+            1: Default output and final reconstructed image displayed. 
+            2: Extended output. Prints full datafile header, displays simulated tfs. 
+        flip: Bool. Whether to use a single tfs (False) or calculate a tfs for 
+            the sample in both orientations. Default True. 
+        calc_region: 3D binary array. Region for which to calculate the phase 
+            shift. Voxels equal to 0 will be skipped to speed up computation 
+            time. Default None -> full region calculated. 
+        thk_map: 2D array (y,x). Thickness values as factor of total thickness 
+            (zscale*zsize). If a 3D array is given, it will be summed along z axis. 
+            This only effects the simulation of images given the phaseand not 
+            the phase calculation itself. I.e. a thickness of 0 will not erase 
+            the magnetization present in that region (and should not be used). 
+            Default None -> Uniform thickness, equivalent to array of 1's. 
+        pscope: Microscope object. Contains accelerating voltage, aberations, etc. 
+        def_val: Float. The defocus values at which to calculate the images.
+        theta_x: Float. Rotation around x-axis (degrees). Default 0. 
+        theta_y: Float. Rotation around y-axis (degrees). Default 0. 
+        Msat: Float. Saturation magnetization (gauss). 
+        sample_V0: Float. Mean inner potential of sample (V).
+        sample_xip0: Float. Extinction distance (nm).
+        mem_thk: Float. Support membrane thickness (nm). Default 50. 
+        mem_xip0: Float. Support membrane extinction distance (nm). Default 1000. 
+        add_random: Bool or Float. Whether or not to add amorphous background to
+            the simulation. True or 1 will add a default background, any 
+            other value will be multiplied to scale the additional phase term. 
+        sym: Boolean. Fourier edge effects are marginally improved by 
+            symmetrizing the images before reconstructing (image reconstructed 
+            is 4x as large). Default False.
+        qc: Float. The Tikhonov frequency to use as filter, or "percent" to use 
+            15% of q, Default None. If you use a Tikhonov filter the resulting 
+            magnetization is no longer quantitative
 
+    Returns: A dictionary of arrays. 
+        results = {
+            'byt' : y-component of integrated magnetic induction,
+            'bxt' : x-copmonent of integrated magnetic induction,
+            'bbt' : magnitude of integrated magnetic induction, 
+            'phase_m' : magnetic phase shift (radians),
+            'phase_e' : electrostatic phase shift (if using flip stack) (radians),
+            'dIdZ_m' : intensity derivative for calculating phase_m,
+            'dIdZ_e' : intensity derivative for calculating phase_e (if using flip stack), 
+            'color_b' : RGB image of magnetization,
+            'inf_im' : the in-focus image
+        }
     """
     directory, filename = os.path.split(file)
     directory = os.path.abspath(directory)
