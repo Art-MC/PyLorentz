@@ -195,10 +195,6 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
     phi0 = 2.07e7 #Gauss*nm^2 flux quantum
     cb = 2*np.pi*b0/phi0*del_px**2 #1/px^2
 
-    # calculate magnetic phase shift with mansuripur algorithm
-    mphi = mansPhi(bx=mag_x, by=mag_y, thick = thk2)*cb
-
-    # and now electric phase shift
     if isl_shape is None:
         thk_map = np.ones(mag_x.shape)*isl_thk
     else:
@@ -214,6 +210,9 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
                 It was given as a {isl_shape.ndim} dimension array."""))
             sys.exit(1)
 
+    # calculate magnetic phase shift with mansuripur algorithm
+    mphi = mansPhi(bx=mag_x, by=mag_y, thick = thk2)*cb
+    # and now electric phase shift
     ephi = pscope.sigma * (thk_map * isl_V0 + np.ones(mag_x.shape) * mem_thk * mem_V0)
     return (ephi, mphi)
 
@@ -360,7 +359,7 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
 
 
 def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=True,
-    calc_region=None, thk_map=None, pscope=None, defval=0, theta_x=0, theta_y=0, 
+    thk_map=None, pscope=None, defval=0, theta_x=0, theta_y=0, 
     Msat=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000, 
     add_random=0, sym=False, qc=None):
     """Load a micromagnetic output file and reconstruct simulated LTEM images. 
@@ -395,14 +394,11 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
             2: Extended output. Prints full datafile header, displays simulated tfs. 
         flip: Bool. Whether to use a single tfs (False) or calculate a tfs for 
             the sample in both orientations. Default True. 
-        calc_region: 3D binary array. Region for which to calculate the phase 
-            shift. Voxels equal to 0 will be skipped to speed up computation 
-            time. Default None -> full region calculated. 
         thk_map: 2D array (y,x). Thickness values as factor of total thickness 
             (zscale*zsize). If a 3D array is given, it will be summed along z axis. 
-            This only effects the simulation of images given the phaseand not 
-            the phase calculation itself. I.e. a thickness of 0 will not erase 
-            the magnetization present in that region (and should not be used). 
+            Pixels with thickness=0 will not have the phase calculated as a method
+            to speed of computation time; if you want to calculate for all pixels
+            then set thin regions to a small value e.g. 1e-9. 
             Default None -> Uniform thickness, equivalent to array of 1's. 
         pscope: Microscope object. Contains accelerating voltage, aberations, etc. 
         def_val: Float. The defocus values at which to calculate the images.
@@ -436,6 +432,7 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
             'inf_im' : the in-focus image
         }
     """
+    vprint = print if v>=1 else lambda *a, **k: None
     directory, filename = os.path.split(file)
     directory = os.path.abspath(directory)
     if savename is None:
@@ -446,11 +443,23 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
 
     phi0 = 2.07e7 #Gauss*nm^2 
     pre_B = 2*np.pi*Msat/phi0*zscale**2 #1/px^2
-    if calc_region is None:
-        calc_region = np.ones(mag_x.shape)
-    
-    ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=calc_region, v=v,
-                           theta_x=theta_x, theta_y=theta_y, pre_B=pre_B, pre_E=pscope.sigma*sample_V0)
+    pre_E = pscope.sigma*sample_V0*zscale #1/px
+
+    thk_map3D = None
+    if thk_map is not None:
+        if np.count_nonzero(thk_map==0) > 0:
+            vprint("\nYour thickness map has nonzero elements.")
+            vprint("phase will not be calculated for these regions and this may affect final reconstruction.") 
+        if type(thk_map) != np.ndarray:
+            thk_map = np.array(thk_map)
+        if thk_map.ndim == 3:
+            thk_map3D = thk_map
+        elif thk_map.ndim == 2:
+            thk_map3D = np.tile(thk_map,(zsize,1,1))/zsize
+
+
+    ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=thk_map3D, v=v,
+                           theta_x=theta_x, theta_y=theta_y, pre_B=pre_B, pre_E=pre_E)
 
     if save < 1:
         save_path = None
@@ -466,10 +475,10 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
     sim_name = savename
     if flip: 
         sim_name = savename+'_flip'
-        Tphi_flip, im_un_flip, im_in_flip, im_ov_flip = sim_images(mphi= -1*mphi, ephi=ephi, isl_shape=thk_map, 
-            pscope=pscope, del_px = del_px, def_val=defval, add_random=add_random,
-            isl_thk=thk, isl_xip0=sample_xip0, mem_thk=mem_thk, mem_xip0=mem_xip0,
-            v=v, save_path=save_path, save_name=sim_name)
+        Tphi_flip, im_un_flip, im_in_flip, im_ov_flip = sim_images(mphi= -1*mphi, 
+            ephi=ephi, isl_shape=thk_map, pscope=pscope, del_px = del_px, def_val=defval, 
+            add_random=add_random,isl_thk=thk, isl_xip0=sample_xip0, mem_thk=mem_thk, 
+            mem_xip0=mem_xip0,v=v, save_path=save_path, save_name=sim_name)
         sim_name = savename+'_unflip'
 
     Tphi, im_un, im_in, im_ov = sim_images(mphi=mphi, ephi=ephi, isl_shape=thk_map, 

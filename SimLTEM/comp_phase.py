@@ -27,7 +27,9 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
         mx: 3D array. x component of magnetization at each voxel (z,y,x) (gauss)
         my: 3D array. y component of magnetization at each voxel (z,y,x) (gauss)
         mz: 3D array. z component of magnetization at each voxel (z,y,x) (gauss)
-        Dshp: 3D array. Binary shape function of the object. 1 inside, 0 outside
+        Dshp: 3D array. Weighted shape function of the object. Where value is 0
+            phase is not computed, otherwise it is multiplied by the voxel value
+            of Dshp. 
         theta_x: Float. Rotation around x-axis (degrees) 
         theta_y: Float. Rotation around y-axis (degrees) 
         pre_B: Float. Prefactor for unit conversion in calculating the magnetic 
@@ -63,8 +65,8 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     KK[zinds] = 1.0 # Need to take care of points where KK is zero since we will be dividing later
 
     #now compute constant factors - S
-    Sx = 1j * pre_B * KX / KK**2
-    Sy = 1j * pre_B * KY / KK**2
+    Sx = 1j * KX / KK**2
+    Sy = 1j * KY / KK**2
     Sx[zinds] = 0.0
     Sy[zinds] = 0.0
 
@@ -76,6 +78,11 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     if Dshp is None: 
         Dshp = np.ones(mx.shape)
     (Kn, Jn, In) = np.where(Dshp != 0)
+    # Compute the rotation angles
+    st = np.sin(np.deg2rad(theta_x))
+    ct = np.cos(np.deg2rad(theta_x))
+    sg = np.sin(np.deg2rad(theta_y))
+    cg = np.cos(np.deg2rad(theta_y))
     
     nelems = In.size
     vprint(f'Beginning phase calculation for {nelems:g} voxels.')
@@ -85,24 +92,19 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
         if time.time() - stime >= 15:
             vprint('{:.2f}%'.format(nn/nelems*100))
             stime = time.time()
-        # Compute the rotation angles
-        st = np.sin(np.deg2rad(theta_x))
-        ct = np.cos(np.deg2rad(theta_x))
-        sg = np.sin(np.deg2rad(theta_y))
-        cg = np.cos(np.deg2rad(theta_y))
         # compute the rotated values; 
         # here we apply rotation about X first, then about Y
         i = In[nn] - d2
         j = Jn[nn] - d2
         k = Kn[nn] - dz2
-        i_n = np.float(i) * cg + np.float(j) * sg * st + np.float(k) * sg * ct
-        j_n = np.float(j) * ct - np.float(k) * st
+        i_n = i*cg + j*sg*st + k*sg*ct
+        j_n = j*ct - k*st
 
         mx_n = mx[Kn[nn],Jn[nn],In[nn]] * cg + my[Kn[nn],Jn[nn],In[nn]] * sg * st + mz[Kn[nn],Jn[nn],In[nn]] * sg * ct
         my_n = my[Kn[nn],Jn[nn],In[nn]] * ct - mz[Kn[nn],Jn[nn],In[nn]] * st
 
         # compute the expontential summation
-        sum_term = np.exp(-1j * (KX * j_n + KY * i_n))
+        sum_term = np.exp(-1j * (KX*j_n + KY*i_n))
         # add to ephi
         ephi_k += sum_term * Dshp[Kn[nn],Jn[nn],In[nn]]
         # add to mphi
@@ -113,7 +115,7 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     mphi_k[zinds] = 0.0
 
     ephi = (np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(ephi_k)))).real*pre_E
-    mphi = (np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(mphi_k)))).real # already have this in Sx and Sy: * pre_B
+    mphi = (np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(mphi_k)))).real*pre_B
 
     return [ephi,mphi]
 
