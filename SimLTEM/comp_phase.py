@@ -14,7 +14,7 @@ import numpy as np
 from TIE_helper import *
 import time
 
-def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=1.0, v=1):
+def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=None, v=1):
     """Applies linear supeposition principle for 3D reconstruction of magnetic and electrostatic phase shifts.
 
     This function will take the 3D arrays with Mx, My and Mz components of the magnetization
@@ -34,7 +34,7 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
         theta_y: Float. Rotation around y-axis (degrees) 
         pre_B: Float. Prefactor for unit conversion in calculating the magnetic 
             phase shift. Units 1/pixels^2. Generally (2*pi*b0*(nm/pix)^2)/phi0 
-            where b0 is the saturation magnetization and phi0 the magnetic flux
+            where b0 is the Saturation induction and phi0 the magnetic flux
             quantum. 
         pre_E: Float. Prefactor for unit conversion in calculating the 
             electrostatic phase shift. Equal to sigma*V0, where sigma is the 
@@ -46,29 +46,31 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
         mphi: magnetic phase shift, 2D array
     """
     vprint = print if v>=1 else lambda *a, **k: None
+    if pre_E is None: # pre_E and pre_B should be set for material params
+        print('adjusting')
+        pre_E = 4.80233*pre_B # a generic value in case its not.  
 
-    [zsz,ysz,xsz] = mx.shape
-    dim = xsz #Assuming same dimensions along X and Y
-    d2 = dim//2
-    if zsz > 1:
-        dz2 = zsz//2
-    else:
-        dz2 = 0
+    [dimz,dimy,dimx] = mx.shape
+    dx2 = dimx//2
+    dy2 = dimy//2
+    dz2 = dimz//2
 
-    line = np.arange(dim)-np.float(d2)
-    [Y,X] = np.meshgrid(line,line)
-    dk = 2.0*np.pi/np.float(dim) # Kspace vector spacing
+    ly = (np.arange(dimy)-dy2)/dimy
+    lx = (np.arange(dimx)-dx2)/dimx
+    [Y,X] = np.meshgrid(ly,lx, indexing='ij')
+    dk = 2.0*np.pi # Kspace vector spacing
     KX = X*dk
     KY = Y*dk
-    KK = np.sqrt(KX**2 + KY**2)
-    zinds = np.where(KK == 0)
-    KK[zinds] = 1.0 # Need to take care of points where KK is zero since we will be dividing later
+    KK = np.sqrt(KX**2 + KY**2) # same as dist(ny, nx, shift=True)*2*np.pi
+    zeros = np.where(KK == 0)   # but we need KX and KY later anyways. 
+    KK[zeros] = 1.0 # Need to take care of points where KK is zero since we will be dividing later
 
-    #now compute constant factors - S
-    Sx = 1j * KX / KK**2
-    Sy = 1j * KY / KK**2
-    Sx[zinds] = 0.0
-    Sy[zinds] = 0.0
+    #now compute constant factors (apply actual constants at very end)
+    inv_KK =  1/KK**2
+    Sx = 1j * KX * inv_KK
+    Sy = 1j * KY * inv_KK
+    Sx[zeros] = 0.0
+    Sy[zeros] = 0.0
 
     #Now we loop through all coordinates and compute the summation terms
     mphi_k = np.zeros(KK.shape,dtype=complex)
@@ -83,37 +85,46 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     ct = np.cos(np.deg2rad(theta_x))
     sg = np.sin(np.deg2rad(theta_y))
     cg = np.cos(np.deg2rad(theta_y))
-    
-    nelems = In.size
-    vprint(f'Beginning phase calculation for {nelems:g} voxels.')
+
+    x = np.arange(dimx) - dx2
+    y = np.arange(dimy) - dy2
+    z = np.arange(dimz) - dz2
+    Z,Y,X = np.meshgrid(z,y,x, indexing='ij') # grid of actual positions (centered on 0)
+
+    # compute the rotated values; 
+    # here we apply rotation about X first, then about Y
+    i_n = Z*sg*ct + Y*sg*st + X*cg
+    j_n = Y*ct - Z*st
+
+    mx_n = mx*cg + my*sg*st + mz*sg*ct
+    my_n = my*ct - mz*st
+
+    # exclude indices where thickness is 0, compile into list of ((z1,y1,x1), (z2,y2...
+    zz, yy, xx = np.where(Dshp != 0)
+    inds = np.dstack((zz,yy,xx)).squeeze()
+    inds = tuple(map(tuple,inds))
+
+    cc = -1
+    nelems = np.shape(inds)[0]
     stime = time.time()
-    vprint('0.00%')
-    for nn in range(nelems):
+    otime = time.time()
+    vprint(f'Beginning phase calculation for {nelems:g} voxels.')
+    vprint('0.00%', end=' .. ')
+    for ind in inds:
+        cc += 1
         if time.time() - stime >= 15:
-            vprint('{:.2f}%'.format(nn/nelems*100))
+            vprint(f'{cc/nelems*100:.2f}%', end=' .. ')
             stime = time.time()
-        # compute the rotated values; 
-        # here we apply rotation about X first, then about Y
-        i = In[nn] - d2
-        j = Jn[nn] - d2
-        k = Kn[nn] - dz2
-        i_n = i*cg + j*sg*st + k*sg*ct
-        j_n = j*ct - k*st
-
-        mx_n = mx[Kn[nn],Jn[nn],In[nn]] * cg + my[Kn[nn],Jn[nn],In[nn]] * sg * st + mz[Kn[nn],Jn[nn],In[nn]] * sg * ct
-        my_n = my[Kn[nn],Jn[nn],In[nn]] * ct - mz[Kn[nn],Jn[nn],In[nn]] * st
-
         # compute the expontential summation
-        sum_term = np.exp(-1j * (KX*j_n + KY*i_n))
-        # add to ephi
-        ephi_k += sum_term * Dshp[Kn[nn],Jn[nn],In[nn]]
-        # add to mphi
-        mphi_k += sum_term * (my_n * Sy - mx_n * Sx)
-    vprint('100.00%')
-    #Now we have the phases in K-space. We convert to real space and return
-    ephi_k[zinds] = 0.0
-    mphi_k[zinds] = 0.0
+        sum_term = np.exp(-1j * (KY*j_n[ind] + KX*i_n[ind]))
+        ephi_k += sum_term * Dshp[ind]
+        mphi_k += sum_term * (my_n[ind]*Sx - mx_n[ind]*Sy)
 
+    vprint('100.0%')
+    print(f"total time loop method: {time.time()-otime:.5g} sec, {(time.time()-otime)/nelems:.5g} sec/voxel.")
+    #Now we have the phases in K-space. We convert to real space and return
+    ephi_k[zeros] = 0.0
+    mphi_k[zeros] = 0.0
     ephi = (np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(ephi_k)))).real*pre_E
     mphi = (np.fft.ifftshift(np.fft.ifftn(np.fft.ifftshift(mphi_k)))).real*pre_B
 

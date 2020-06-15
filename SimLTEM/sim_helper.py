@@ -181,7 +181,7 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
     Material Parameter Args: 
         pscope: Microscope object. Accelerating voltage is the relevant 
             parameter. Default 200kV. 
-        b0: Float. Saturation magnetization (gauss). Default 1e4.
+        b0: Float. saturation induction (gauss). Default 1e4.
         isl_thk: Float. Island thickness (nm). Default 20. 
         isl_V0: Float. Island mean inner potential (V). Default 20. 
         mem_thk: Float. Support membrane thickness (nm). Default 50. 
@@ -221,7 +221,7 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
 #            Simulating images from micromagnetic output            #
 # ================================================================= #
 
-def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1): 
+def load_ovf(file=None, sim='OOMMF', B0=1e4, v=1): 
     """ Load a .ovf or .omf file of magnetization values. 
 
     This function takes magnetization output files from OOMMF or mumax, pulls 
@@ -232,8 +232,8 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
         file: String. Path to file
         sim: String. "OOMMF" or "mumax". OOMMF simulation gives outputs in 
             A/m while mumax is scaled between 0 and 1, and therefore must be
-            multiplied by Msat. Setting sim="raw" will give unscaled values.
-        Msat: Float. Saturation magnetization (gauss). Only relevant if sim=="mumax"
+            multiplied by B0. Setting sim="raw" will give unscaled values.
+        B0: Float. saturation induction (gauss). Only relevant if sim=="mumax"
         v: Int. Verbosity. 
             0 : No output
             1 : Default output
@@ -339,15 +339,15 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
         mu0 = 4*np.pi*1e-7
         reshaped *= mu0
     elif sim.lower() == 'mumax': 
-        vprint(f'Scaling for mumax datafile with Msat={Msat:.3g}.')
-        reshaped *= Msat
+        vprint(f'Scaling for mumax datafile with B0={B0:.3g}.')
+        reshaped *= B0
     elif sim.lower() == 'raw':
         vprint('Not scaling datafile.')
     else: 
         print(textwrap.dedent("""\
         Improper argument given for sim. Please set to one of the following options:
             'oommf' : vector values given in A/m, will be scaled by mu0
-            'mumax' : vectors all of magnitude 1, will be scaled by Msat
+            'mumax' : vectors all of magnitude 1, will be scaled by B0
             'raw'   : vectors will not be scaled."""))
         sys.exit(1)
 
@@ -360,7 +360,7 @@ def load_ovf(file=None, sim='OOMMF', Msat=1e4, v=1):
 
 def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=True,
     thk_map=None, pscope=None, defval=0, theta_x=0, theta_y=0, 
-    Msat=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000, 
+    B0=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000, 
     add_random=0, sym=False, qc=None):
     """Load a micromagnetic output file and reconstruct simulated LTEM images. 
 
@@ -387,7 +387,7 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
                 reconstruction TIE images.
         sim: String. "OOMMF", "mumax" or "raw". OOMMF simulation gives outputs in 
             A/m while mumax is scaled between 0 and 1, and therefore must be
-            multiplied by Msat. Setting sim="raw" will pass unscaled values.
+            multiplied by B0. Setting sim="raw" will pass unscaled values.
         v: Int. Verbosity control. 
             0: All output suppressed. 
             1: Default output and final reconstructed image displayed. 
@@ -404,7 +404,7 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
         def_val: Float. The defocus values at which to calculate the images.
         theta_x: Float. Rotation around x-axis (degrees). Default 0. 
         theta_y: Float. Rotation around y-axis (degrees). Default 0. 
-        Msat: Float. Saturation magnetization (gauss). 
+        B0: Float. saturation induction (gauss). 
         sample_V0: Float. Mean inner potential of sample (V).
         sample_xip0: Float. Extinction distance (nm).
         mem_thk: Float. Support membrane thickness (nm). Default 50. 
@@ -438,11 +438,11 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
     if savename is None:
         savename = os.path.splitext(filename)[0]
 
-    mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim=sim, v=v, Msat=Msat)
+    mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim=sim, v=v, B0=B0)
     (zsize, ysize, xsize) = mag_x.shape
 
     phi0 = 2.07e7 #Gauss*nm^2 
-    pre_B = 2*np.pi*Msat/phi0*zscale**2 #1/px^2
+    pre_B = 2*np.pi*B0/phi0*zscale**2 #1/px^2
     pre_E = pscope.sigma*sample_V0*zscale #1/px
 
     thk_map3D = None
