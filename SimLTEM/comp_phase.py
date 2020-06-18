@@ -13,8 +13,10 @@ Modified, CD Phatak, ANL, 22.May.2016.
 import numpy as np
 from TIE_helper import *
 import time
+import multiprocessing as mp
+from mp_helper import exp_sum
 
-def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=None, v=1):
+def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=None, v=1, multiproc=True):
     """Applies linear supeposition principle for 3D reconstruction of magnetic and electrostatic phase shifts.
 
     This function will take the 3D arrays with Mx, My and Mz components of the magnetization
@@ -41,6 +43,7 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
             interaction constant of the given TEM accelerating voltage (an 
             attribute of the microscope class), and V0 the mean inner potential.
         v: Int. Verbosity. v >= 1 will print progress, v=0 to suppress all prints.
+        mp: Bool. Whether or not to implement multiprocessing. 
     Returns: [ephi, mphi]
         ephi: Electrostatic phase shift, 2D array
         mphi: magnetic phase shift, 2D array
@@ -63,7 +66,7 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     KY = Y*dk
     KK = np.sqrt(KX**2 + KY**2) # same as dist(ny, nx, shift=True)*2*np.pi
     zeros = np.where(KK == 0)   # but we need KX and KY later anyways. 
-    KK[zeros] = 1.0 # Need to take care of points where KK is zero since we will be dividing later
+    KK[zeros] = 1.0 # remove points where KK is zero as will divide by
 
     #now compute constant factors (apply actual constants at very end)
     inv_KK =  1/KK**2
@@ -79,7 +82,11 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     #Trying to use nonzero elements in Dshape to limit the iterations.
     if Dshp is None: 
         Dshp = np.ones(mx.shape)
-    (Kn, Jn, In) = np.where(Dshp != 0)
+    # exclude indices where thickness is 0, compile into list of ((z1,y1,x1), (z2,y2...
+    zz, yy, xx = np.where(Dshp != 0)
+    inds = np.dstack((zz,yy,xx)).squeeze()
+    inds = tuple(map(tuple,inds))
+
     # Compute the rotation angles
     st = np.sin(np.deg2rad(theta_x))
     ct = np.cos(np.deg2rad(theta_x))
@@ -99,29 +106,43 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     mx_n = mx*cg + my*sg*st + mz*sg*ct
     my_n = my*ct - mz*st
 
-    # exclude indices where thickness is 0, compile into list of ((z1,y1,x1), (z2,y2...
-    zz, yy, xx = np.where(Dshp != 0)
-    inds = np.dstack((zz,yy,xx)).squeeze()
-    inds = tuple(map(tuple,inds))
-
     cc = -1
     nelems = np.shape(inds)[0]
     stime = time.time()
     otime = time.time()
     vprint(f'Beginning phase calculation for {nelems:g} voxels.')
-    vprint('0.00%', end=' .. ')
-    for ind in inds:
-        cc += 1
-        if time.time() - stime >= 15:
-            vprint(f'{cc/nelems*100:.2f}%', end=' .. ')
-            stime = time.time()
-        # compute the expontential summation
-        sum_term = np.exp(-1j * (KY*j_n[ind] + KX*i_n[ind]))
-        ephi_k += sum_term * Dshp[ind]
-        mphi_k += sum_term * (my_n[ind]*Sx - mx_n[ind]*Sy)
+    if multiproc:
+        batches = mp.cpu_count()
+        vprint(f"Splitting and running on {batches} cpus")
+        pool = mp.Pool(processes=batches)
+        batch_inds = np.array_split(inds, batches)
+        batches_phi = []
+        for batch in batch_inds:
+            batches_phi.append(pool.apply_async(exp_sum, args=(batch, KY, KX, j_n, i_n,
+                                                Dshp, my_n, mx_n, Sy, Sx,)))
+        pool.close()
+        pool.join() 
+        em_stack = list(map(lambda x: x.get(), batches_phi))
+        em = np.sum(em_stack, axis=0)
+        ephi_k = em[0]
+        mphi_k = em[1]
+        vprint(f"total time multiprocess with {batches} jobs: {time.time()-stime:.5g} sec, {(time.time()-stime)/nelems:.5g} sec/voxel.")
 
-    vprint('100.0%')
-    print(f"total time loop method: {time.time()-otime:.5g} sec, {(time.time()-otime)/nelems:.5g} sec/voxel.")
+    else:
+        vprint("Running on 1 cpu.")
+        vprint('0.00%', end=' .. ')
+        for ind in inds:
+            cc += 1
+            if time.time() - stime >= 15:
+                vprint(f'{cc/nelems*100:.2f}%', end=' .. ')
+                stime = time.time()
+            # compute the expontential summation
+            sum_term = np.exp(-1j * (KY*j_n[ind] + KX*i_n[ind]))
+            ephi_k += sum_term * Dshp[ind]
+            mphi_k += sum_term * (my_n[ind]*Sx - mx_n[ind]*Sy)
+
+        vprint('100.0%')
+        print(f"total time loop method: {time.time()-otime:.5g} sec, {(time.time()-otime)/nelems:.5g} sec/voxel.")
     #Now we have the phases in K-space. We convert to real space and return
     ephi_k[zeros] = 0.0
     mphi_k[zeros] = 0.0
