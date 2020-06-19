@@ -11,10 +11,26 @@ Modified, CD Phatak, ANL, 22.May.2016.
 """
 
 import numpy as np
-from TIE_helper import *
+# from TIE_helper import *
 import time
 import multiprocessing as mp
-from mp_helper import exp_sum
+# from mp_helper import exp_sum
+
+def exp_sum(inds, KY, KX, j_n, i_n, Dshp, my_n, mx_n, Sy, Sx):
+    """Called linsupPhi when running with multiprocessing"""
+    mphi_k = np.zeros(KX.shape,dtype=complex)
+    ephi_k = np.zeros(KX.shape,dtype=complex)
+    
+    for ind in inds:
+        z = ind[0]
+        y = ind[1]
+        x = ind[2]
+
+        sum_term = np.exp(-1j * (KY*j_n[z,y,x] + KX*i_n[z,y,x]))
+        ephi_k += sum_term * Dshp[z,y,x]
+        mphi_k += sum_term * (my_n[z,y,x]*Sx - mx_n[z,y,x]*Sy)
+
+    return (ephi_k, mphi_k)
 
 def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=None, v=1, multiproc=True):
     """Applies linear supeposition principle for 3D reconstruction of magnetic and electrostatic phase shifts.
@@ -120,9 +136,10 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
         for batch in batch_inds:
             batches_phi.append(pool.apply_async(exp_sum, args=(batch, KY, KX, j_n, i_n,
                                                 Dshp, my_n, mx_n, Sy, Sx,)))
-        pool.close()
-        pool.join() 
-        em_stack = list(map(lambda x: x.get(), batches_phi))
+        # pool.close()
+        # pool.join() 
+        em_stack = [p.get() for p in batches_phi]
+        # em_stack = list(map(lambda x: x.get(), batches_phi))
         em = np.sum(em_stack, axis=0)
         ephi_k = em[0]
         mphi_k = em[1]
