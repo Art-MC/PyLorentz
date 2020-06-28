@@ -25,6 +25,7 @@ dependencies:
   - nodejs 
   - notebook
   - numpy
+  - numba
   - pandas
   - pillow
   - pip

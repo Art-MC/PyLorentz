@@ -100,6 +100,7 @@ dependencies:
   - widgetsnbextension=3.5.1
   - yaml=0.1.7
   - zeromq=4.3.2
+  - numba
   - pip:
     - mouseinfo==0.0.4
     - opencv-python==4.1.1.26

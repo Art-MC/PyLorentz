@@ -155,7 +155,7 @@ def sim_images(mphi=None, ephi=None, pscope=None, isl_shape=None, del_px=1,
     return (Tphi, im_un, im_in, im_ov)
 
 
-def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Microscope(),
+def std_mansPhi(mag_x=None, mag_y=None, mag_z=None, del_px = 1, isl_shape=None, pscope=Microscope(),
     b0=1e4, isl_thk=20, isl_V0=20, mem_thk=50, mem_V0=10):
     """Calculates the electron phase shift through a given 2D magnetization. 
     
@@ -177,7 +177,7 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
             be taken as the isl_shape values multiplied by isl_thickness. If 3D, 
             the isl_shape array will be summed along the z access becoming 2D. 
             Default = None -> uniform flat material with thickness = isl_thk.
-        del_px: Float. Scale factor (nm/pixel). Default = 1. 
+        del_px: Float. Scale factor (nm/pixel) along beam direction. 
     Material Parameter Args: 
         pscope: Microscope object. Accelerating voltage is the relevant 
             parameter. Default 200kV. 
@@ -212,8 +212,10 @@ def std_mansPhi(mag_x=None, mag_y=None, del_px = 1, isl_shape=None, pscope=Micro
 
     # calculate magnetic phase shift with mansuripur algorithm
     mphi = mansPhi(bx=mag_x, by=mag_y, thick = thk2)*cb
+
     # and now electric phase shift
     ephi = pscope.sigma * (thk_map * isl_V0 + np.ones(mag_x.shape) * mem_thk * mem_V0)
+    ephi -= np.sum(ephi)/np.size(ephi)
     return (ephi, mphi)
 
 
@@ -240,9 +242,9 @@ def load_ovf(file=None, sim='OOMMF', B0=1e4, v=1):
             2 : Extended output, print full header. 
 
     Returns: (mag_x, mag_y, mag_z, del_px)
-        mag_x: 2D array. x-component of magnetization. 
-        mag_y: 2D array. y-component of magnetization. 
-        mag_z: 2D array. z-component of magnetization. 
+        mag_x: 2D array. x-component of magnetization. (gauss)
+        mag_y: 2D array. y-component of magnetization. (gauss)
+        mag_z: 2D array. z-component of magnetization. (gauss)
         del_px: Float. Scale of datafile in y/x direction (nm/pixel)
         zscale: Float. Scale of datafile in z-direction (nm/pixel)
     """
@@ -333,16 +335,19 @@ def load_ovf(file=None, sim='OOMMF', B0=1e4, v=1):
         print("Unkown datatype given. Exiting.")
         sys.exit(1)
 
-    reshaped = data.reshape((zsize, ysize, xsize, 3))
     if sim.lower() == 'oommf':
         vprint('Scaling for OOMMF datafile.')
-        mu0 = 4*np.pi*1e-7
-        reshaped *= mu0
+        mu0 = 4*np.pi*1e-7 # output in Tesla
+        data *= mu0
     elif sim.lower() == 'mumax': 
         vprint(f'Scaling for mumax datafile with B0={B0:.3g}.')
-        reshaped *= B0
+        data *= B0 # output is same units as B0
     elif sim.lower() == 'raw':
         vprint('Not scaling datafile.')
+    elif sim.lower() == 'norm': 
+        row_sums = np.sqrt(np.sum(data**2, axis=1))
+        rs2 = np.where(row_sums==0, 1, row_sums)
+        data = data / rs2[:,np.newaxis]
     else: 
         print(textwrap.dedent("""\
         Improper argument given for sim. Please set to one of the following options:
@@ -351,30 +356,43 @@ def load_ovf(file=None, sim='OOMMF', B0=1e4, v=1):
             'raw'   : vectors will not be scaled."""))
         sys.exit(1)
 
+    reshaped = data.reshape((zsize, ysize, xsize, 3))
+
     mag_x = reshaped[:,:,:,0]
     mag_y = reshaped[:,:,:,1]
     mag_z = reshaped[:,:,:,2]
     
     return(mag_x, mag_y, mag_z, del_px, zscale)
 
+def make_thickness_map(mag_x=None, mag_y=None, mag_z=None, file=None):
+    if file is not None: 
+        mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim='norm', v=0)
+    nonzero = (mag_x.astype('bool') | mag_y.astype('bool') | mag_z.astype('bool')).astype(int)
+    zdim = mag_x.shape[0]
+    thk_map = np.sum(nonzero, axis=0) / zdim
+    return thk_map
+
+
 
 def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=True,
     thk_map=None, pscope=None, defval=0, theta_x=0, theta_y=0, 
     B0=1e4, sample_V0=10, sample_xip0=50, mem_thk=50, mem_xip0=1000, 
-    add_random=0, sym=False, qc=None):
+    add_random=0, sym=False, qc=None, method='mans'):
     """Load a micromagnetic output file and reconstruct simulated LTEM images. 
 
     This is an "all-in-one" function that takes a magnetization datafile, 
     material parameters, and imaging conditions to simulate LTEM images and 
     reconstruct them.
 
-    The image simulation step uses the linear superposition method for deteriming
-    phase shift, which allows for 3d magnetization inputs and tilting the sample. 
-    A substrate can be accounted for as well, though it is assumed to be uniform
-    and non-magnetic, i.e. applying a uniform phase shift. 
+    The image simulation step uses the Mansuripur algorithm [1] for calculating 
+    the phase shift if theta_x and theta_y == 0, as it is computationally very
+    efficient. For nonzero tilts it employs the linear superposition method for 
+    deteriming phase shift, which allows for 3d magnetization inputs and robust
+    tilting the sample. A substrate can be accounted for as well, though it is 
+    assumed to be uniform and non-magnetic, i.e. applying a uniform phase shift. 
 
-    Imaging parameters are defined by the defocus value, tilt angles, and microscope
-    object which contains accelerating voltage, aberrations, etc. 
+    Imaging parameters are defined by the defocus value, tilt angles, and 
+    microscope object which contains accelerating voltage, aberrations, etc. 
 
     Args: 
         file: String. Path to file. 
@@ -395,10 +413,10 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
         flip: Bool. Whether to use a single tfs (False) or calculate a tfs for 
             the sample in both orientations. Default True. 
         thk_map: 2D array (y,x). Thickness values as factor of total thickness 
-            (zscale*zsize). If a 3D array is given, it will be summed along z axis. 
-            Pixels with thickness=0 will not have the phase calculated as a method
-            to speed of computation time; if you want to calculate for all pixels
-            then set thin regions to a small value e.g. 1e-9. 
+            (zscale*zsize). If a 3D array is given, it will be summed along z axis
+            and divided by zsize. Pixels with thickness=0 will not have the
+            phase calculated as a method to speed of computation time; the 
+            make_thickness_map() function can be useful for island structures.
             Default None -> Uniform thickness, equivalent to array of 1's. 
         pscope: Microscope object. Contains accelerating voltage, aberations, etc. 
         def_val: Float. The defocus values at which to calculate the images.
@@ -418,19 +436,34 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
         qc: Float. The Tikhonov frequency to use as filter, or "percent" to use 
             15% of q, Default None. If you use a Tikhonov filter the resulting 
             magnetization is no longer quantitative
+        method: String. Method of phase calculation to use if theta_x == 0 and 
+            theta_y == 0. If either are nonzero then the linear superposition 
+            method will be used. 
+            "Mans" : Use Mansuripur algorithm (default)
+            "Linsup" : Use linear superposition method
 
     Returns: A dictionary of arrays. 
         results = {
             'byt' : y-component of integrated magnetic induction,
             'bxt' : x-copmonent of integrated magnetic induction,
             'bbt' : magnitude of integrated magnetic induction, 
-            'phase_m' : magnetic phase shift (radians),
-            'phase_e' : electrostatic phase shift (if using flip stack) (radians),
+            'phase_m_sim' : simulated magnetic phase shift from the input 
+                magnetization and materials parameters,
+            'phase_e_sim' : simulated electrostatic phase shift from the input 
+                thickness map and materials parameters,
+            'phase_m' : magnetic phase shift from TIE reconstruction(radians),
+            'phase_e' : electrostatic phase shift from TIE reconstruction (if 
+                using flip stack) (radians),
             'dIdZ_m' : intensity derivative for calculating phase_m,
-            'dIdZ_e' : intensity derivative for calculating phase_e (if using flip stack), 
+            'dIdZ_e' : intensity derivative for calculating phase_e (if using 
+                flip stack), 
             'color_b' : RGB image of magnetization,
             'inf_im' : the in-focus image
         }
+
+    References: 
+    [1] Mansuripur, M. Computation of electron diffraction patterns in Lorentz 
+        electron microscopy of thin magnetic films. J. Appl. Phys. 69, 5890 (1991).
     """
     vprint = print if v>=1 else lambda *a, **k: None
     directory, filename = os.path.split(file)
@@ -438,73 +471,97 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
     if savename is None:
         savename = os.path.splitext(filename)[0]
 
-    mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim=sim, v=v, B0=B0)
+    mag_x, mag_y, mag_z, del_px, zscale = load_ovf(file, sim='norm', v=v, B0=B0)
     (zsize, ysize, xsize) = mag_x.shape
 
+    # define numerical prefactors for phase shift calculation
     phi0 = 2.07e7 #Gauss*nm^2 
     pre_B = 2*np.pi*B0/phi0*zscale**2 #1/px^2
     pre_E = pscope.sigma*sample_V0*zscale #1/px
 
     thk_map3D = None
+    check_ephi = False
     if thk_map is not None:
-        if np.count_nonzero(thk_map==0) > 0:
-            vprint("\nYour thickness map has nonzero elements.")
-            vprint("phase will not be calculated for these regions and this may affect final reconstruction.") 
         if type(thk_map) != np.ndarray:
             thk_map = np.array(thk_map)
         if thk_map.ndim == 3:
             thk_map3D = thk_map
+            thk_map_2D = np.sum(thk_map, axis=0)
+            thk = zscale
         elif thk_map.ndim == 2:
-            thk_map3D = np.tile(thk_map,(zsize,1,1))/zsize
+            thk_map3D = np.tile(thk_map,(zsize,1,1))
+            thk_map_2D = thk_map
+            thk = zsize * zscale
+    # else: 
+    #     tst_map = (mag_x.astype('bool') | mag_y.astype('bool') | mag_z.astype('bool')).astype(int)
+    #     print('tst map shape: ', tst_map.shape)
+    #     if np.min(tst_map) == 0: # there are zero elements of the magnetization
+    #         vprint(textwrap.dedent("""\
+    #         There are voxels of your input file where the magnetization is 0. 
+    #         These will be skipped to improve computation time, but the film is 
+    #         still being treated as of uniform thickness. """))
+    #         thk_map3D = tst_map / zsize
+    #         check_ephi = True
 
-
-    ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=thk_map3D, v=v,
+    if theta_x == 0 and theta_y == 0 and method.lower() == 'mans': 
+        vprint('Calculating phase shift with Mansuripur algorithm. ')
+        mag_x2D = np.sum(mag_x, axis=0)
+        mag_y2D = np.sum(mag_y, axis=0)
+        mag_z2D = np.sum(mag_z, axis=0)
+        ephi, mphi = std_mansPhi(mag_x2D, mag_y2D, mag_z2D, del_px=zscale, isl_thk=zscale,
+            isl_shape=thk_map_2D, pscope=pscope, b0=B0, isl_V0=sample_V0)
+    else: 
+        vprint('Calculating phase shift with the linear superposition method.')
+        # calculate phase shifts with linear superposition method
+        ephi, mphi = linsupPhi(mx=mag_x, my=mag_y, mz=mag_z, Dshp=thk_map3D, v=v,
                            theta_x=theta_x, theta_y=theta_y, pre_B=pre_B, pre_E=pre_E)
+    # if check_ephi: # we generated an island like structure
 
     if save < 1:
-        save_path = None
+        save_path_tfs = None
         TIE_save = False
     else:
-        save_path = os.path.join(directory, 'sim_tfs')
+        save_path_tfs = os.path.join(directory, 'sim_tfs')
         if save < 2:
             TIE_save = 'b'
         else:
             TIE_save = True
-  
-    thk = zsize * zscale
+
     sim_name = savename
     if flip: 
         sim_name = savename+'_flip'
         Tphi_flip, im_un_flip, im_in_flip, im_ov_flip = sim_images(mphi= -1*mphi, 
-            ephi=ephi, isl_shape=thk_map, pscope=pscope, del_px = del_px, def_val=defval, 
+            ephi=ephi, isl_shape=thk_map_2D, pscope=pscope, del_px = del_px, def_val=defval, 
             add_random=add_random,isl_thk=thk, isl_xip0=sample_xip0, mem_thk=mem_thk, 
-            mem_xip0=mem_xip0,v=v, save_path=save_path, save_name=sim_name)
+            mem_xip0=mem_xip0,v=v, save_path=save_path_tfs, save_name=sim_name)
         sim_name = savename+'_unflip'
 
-    Tphi, im_un, im_in, im_ov = sim_images(mphi=mphi, ephi=ephi, isl_shape=thk_map, 
+    Tphi, im_un, im_in, im_ov = sim_images(mphi=mphi, ephi=ephi, isl_shape=thk_map_2D, 
         pscope=pscope, del_px = del_px, def_val=defval, add_random=add_random,
         isl_thk=thk, isl_xip0=sample_xip0, mem_thk=mem_thk, mem_xip0=mem_xip0,
-        v=v, save_path=save_path, save_name=sim_name)
+        v=0, save_path=save_path_tfs, save_name=sim_name)
 
     if v >= 2:
-        print("Displaying unflipped images:")
-        show_sims(Tphi, im_un, im_in, im_ov)
+        show_sims(Tphi, im_un, im_in, im_ov, title="Simulated Unflipped Images")
         if flip: 
-            print("Displaying flipped images:")
-            show_sims(Tphi_flip, im_un_flip, im_in_flip, im_ov_flip)
+            show_sims(Tphi_flip, im_un_flip, im_in_flip, im_ov_flip, 
+                title="Simulated Flipped Images")
 
     if flip: 
-        ptie = TIE_params(imstack=[im_un, im_in, im_ov], flipstack=[im_un_flip, im_in_flip, im_ov_flip], 
-            defvals=[defval], flip=True, no_mask=True, data_loc=directory, v=0) 
+        ptie = TIE_params(imstack=[im_un, im_in, im_ov], 
+            flipstack=[im_un_flip, im_in_flip, im_ov_flip], defvals=[defval], 
+            flip=True, no_mask=True, data_loc=directory, v=0) 
         ptie.set_scale(del_px)
     else:
-        ptie = TIE_params(imstack=[im_un, im_in, im_ov], flipstack=[], defvals=[defval], 
-            flip=False, no_mask=True, data_loc=directory, v=0) 
+        ptie = TIE_params(imstack=[im_un, im_in, im_ov], flipstack=[], 
+            defvals=[defval], flip=False, no_mask=True, data_loc=directory, v=0) 
         ptie.set_scale(del_px)
 
     results = TIE(i=0, ptie=ptie, pscope=pscope, dataname=savename, sym=sym,
                     qc=qc, save=TIE_save, v=v)
     
+    results['phase_m_sim'] = mphi
+    results['phase_e_sim'] = ephi
     return results 
 
 
@@ -512,9 +569,8 @@ def reconstruct_ovf(file=None, savename=None, save=1, sim='oommf', v=1, flip=Tru
 #           Various functions for displaying vector fields          #
 # ================================================================= #
 
-# These display functions were largely hacked together, and any advice or 
-# resources for improving/replacing them (while still working within jupyter 
-# notebooks) would be greatly appreciated. Contact: AMcCray@anl.gov
+# These display functions were largely hacked together, any improvements that 
+# work within jupyter rnotebooks would be appreciated. email: amccray@anl.gov
 
 def show_3D(mag_x, mag_y, mag_z, a=15, ay=None, az=15, l=None, show_all=True):
     """ Display a 3D vector field with arrows. 
@@ -528,9 +584,9 @@ def show_3D(mag_x, mag_y, mag_z, a=15, ay=None, az=15, l=None, show_all=True):
     and ay. 
 
     Args: 
-        mag_x: 2D array. x-component of magnetization. 
-        mag_y: 2D array. y-component of magnetization. 
-        mag_z: 2D array. z-component of magnetization. 
+        mag_x: 2D array (z,y,x). x-component of magnetization. 
+        mag_y: 2D array (z,y,x). y-component of magnetization. 
+        mag_z: 2D array (z,y,x). z-component of magnetization. 
         a: int. Number of arrows to plot along the x-axis, if ay=None then this 
             sets the y-axis too. 
         ay: int. Number of arrows to plot along y-axis. Defaults to a. 
@@ -548,52 +604,52 @@ def show_3D(mag_x, mag_y, mag_z, a=15, ay=None, az=15, l=None, show_all=True):
     """ 
     if ay is None:
         ay = a
-    ay = ((mag_x.shape[0] - 1)//a)+1
-    axx = ((mag_x.shape[1] - 1)//a)+1
 
     bmax = max(mag_x.max(), mag_y.max(),mag_z.max())
 
     if l is None:
-        l = mag_x.shape[0]/(2*bmax*a)
+        l = mag_x.shape[1]/(2*bmax*a)
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     
-    dimx = mag_x.shape[0]
-    dimy = mag_x.shape[1]
     if mag_x.ndim == 3:
-        dimz = mag_x.shape[2]
+        dimz, dimy, dimx = mag_x.shape
         if az > dimz:
             az = 1
         else:
-            az = ((mag_x.shape[2] - 1)//az)+1
-        
-        X,Y,Z = np.meshgrid(np.arange(0,dimx,1),
-                       np.arange(0,dimy,1),
-                       np.arange(0,dimz*a,a))
+            az = ((dimz - 1)//az)+1
     else:
+        dimy, dimx = mag_x.shape
         dimz = 1
-        X,Y,Z = np.meshgrid(np.arange(0,dimx,1),
+        
+    Z,Y,X = np.meshgrid(np.arange(0,dimz,1),
                        np.arange(0,dimy,1),
-                       np.arange(0,1,1))
+                       np.arange(0,dimx,1), indexing='ij')
+    ay = ((dimy - 1)//ay)+1
+    axx = ((dimx - 1)//a)+1
     
     # doesnt handle (0,0,0) arrows very well, so this puts in very small ones. 
-    zeros = ~(mag_x.astype('bool')+mag_y.astype('bool')+mag_z.astype('bool'))
-    mag_z[np.where(zeros)] = bmax/100000
-    mag_x[np.where(zeros)] = bmax/100000
-    mag_y[np.where(zeros)] = bmax/100000
+    zeros = ~(mag_x.astype('bool') | mag_y.astype('bool') | mag_z.astype('bool'))
+    zinds = np.where(zeros)
+    mag_z[zinds] = bmax/1e5
+    mag_x[zinds] = bmax/1e5
+    mag_y[zinds] = bmax/1e5
 
-    U = mag_x.reshape((dimx,dimy,dimz))
-    V = mag_y.reshape((dimx,dimy,dimz))
-    W = mag_z.reshape((dimx,dimy,dimz))
+    # show_im(np.where(np.abs(mag_x)=0.01, 0, 1)[0])
+
+    U = mag_x.reshape((dimz,dimy,dimx))
+    V = mag_y.reshape((dimz,dimy,dimx))
+    W = mag_z.reshape((dimz,dimy,dimx))
 
     # maps in plane direction to hsv wheel, out of plane to white (+z) and black (-z)
-    phi = np.ravel(np.arctan2(V[::ay,: :axx,::az],U[::ay,: :axx,::az]))
+    phi = np.ravel(np.arctan2(V[::az, ::ay, ::axx],U[::az, ::ay, ::axx]))
+
     # map phi from [pi,-pi] -> [1,0]
     hue = phi/(2*np.pi)+0.5
 
     # setting the out of plane values now
-    theta = np.arctan2(W[::ay,: :axx,::az],(U[::ay,: :axx,::az]**2+V[::ay,: :axx,::az]**2))
+    theta = np.arctan2(W[::az, ::ay,::axx],(U[::az, ::ay,::axx]**2+V[::az, ::ay,::axx]**2))
     value = np.ravel(np.where(theta<0, 1+2*theta/np.pi, 1))
     sat = np.ravel(np.where(theta>0, 1-2*theta/np.pi, 1))
 
@@ -622,20 +678,24 @@ def show_3D(mag_x, mag_y, mag_z, a=15, ay=None, az=15, l=None, show_all=True):
     # quiver colors shaft then points: for n arrows c=[c1, c2, ... cn, c1, c1, c2, c2, ...]
     arrow_colors = np.concatenate((arrow_colors,np.repeat(arrow_colors,2, axis=0))) 
 
-    q = ax.quiver(X[::ay,: :axx,::az], Y[::ay,: :axx,::az], Z[::ay,: :axx,::az], 
-                  U[::ay,: :axx,::az], V[::ay,: :axx,::az], W[::ay,: :axx,::az],
+
+    # want box to be square so all arrow directions scaled the same
+    dim = max(dimx,dimy,dimz)
+    ax.set_xlim(0,dim)
+    ax.set_ylim(0,dimy)
+    if az >= dimz:
+        ax.set_zlim(-dim//2, dim//2)
+    else:
+        ax.set_zlim(0,dim)
+        Z += (dim-dimz)//2
+
+    q = ax.quiver(X[::az, ::ay,::axx], Y[::az, ::ay,::axx], Z[::az, ::ay,::axx], 
+                  U[::az, ::ay,::axx], V[::az, ::ay,::axx], W[::az, ::ay,::axx],
                   color = arrow_colors, 
                   length= float(l), 
                   pivot = 'middle', 
                   normalize = False)
 
-    ax.set_xlim(0,dimx)
-    ax.set_ylim(0,dimy)
-    if dimz == 1:
-        ax.set_zlim(-dimx//2, dimx//2)
-    else:
-        # ax.set_zlim(0, dimz*a)
-        ax.set_zlim(-dimx//2 + dimz, dimx//2 + dimz)
 
     ax.set_xlabel('x')
     ax.set_ylabel('y')
@@ -644,6 +704,9 @@ def show_3D(mag_x, mag_y, mag_z, a=15, ay=None, az=15, l=None, show_all=True):
     
 def show_2D(mag_x, mag_y, a = 15, l = None, title = None):
     """ Display a 2D vector arrow plot. 
+
+    Quiver doesn't allow setting the origin as "upper" for some reason. Just 
+    flipping the axis doesn't also flip the arrow directions. 
 
     Args: 
         mag_x: 2D array. x-component of magnetization. 
@@ -674,14 +737,22 @@ def show_2D(mag_x, mag_y, a = 15, l = None, title = None):
                   units='inches', 
                   scale = l,
                   pivot = 'mid')
+
+    qk = ax.quiverkey(q, X=0.95, Y=0.98, U=1, label=r'$Msat$', labelpos='S',
+                   coordinates='axes')
+    qk.text.set_backgroundcolor('w')
+
     if title is not None:
         ax.set_title(title)
-    ax.set_aspect(1)
+    plt.tick_params(axis='x',labelbottom=False, bottom=False, top=False)
+    plt.tick_params(axis='y',labelleft=False, left=False, right=False)
+    ydim, xdim = mag_x.shape
+    ax.set_aspect(ydim/xdim)
     plt.show()
     return
 
 
-def show_sims(phi, im_un, im_in, im_ov):
+def show_sims(phi, im_un, im_in, im_ov, title=None):
     """Plot phase, underfocus, infocus, and overfocus images in one plot.
     
     Uses same scale of intensity values for all simulated images but not phase. 
@@ -716,6 +787,9 @@ def show_sims(phi, im_un, im_in, im_ov):
     ax3.imshow(im_ov,cmap='gray', origin = 'upper', vmax = vmax, vmin = vmin)
     plt.axis('off')
     plt.title('Overfocus')
+    if title is not None:
+        fig.suptitle(str(title))
+    plt.show()
     return
 
 
@@ -761,7 +835,7 @@ def Lillihook(dim, rad = None, Q = 1, gamma = np.pi/2, P=1, show=False):
     cx = dim//2      
     if rad is None:
         rad = dim//16
-        print(f'Rad set to {rad}.')
+        print(f'Radius parameter set to {rad}.')
     a = np.arange(dim)
     b = np.arange(dim)
     x,y = np.meshgrid(a,b)

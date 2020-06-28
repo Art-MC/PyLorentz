@@ -229,7 +229,7 @@ def TIE(i=-1, ptie=None, pscope=None, dataname='', sym=False, qc=None, save=Fals
                                     hsvwheel=True, background='black') 
 
     if v >= 1:
-        show_im(results['color_b'], "B-field color HSV colorwheel")
+        show_im(results['color_b'], "B-field color HSV colorwheel", cbar=False)
 
     # save the images
     if save: 
@@ -359,7 +359,7 @@ def SITIE(ptie=None, pscope=None, dataname='', sym=False, qc=None, save=True, i=
     results['color_b'] = color_im(resultsB['ind_x'], resultsB['ind_y'],
         hsvwheel=True, background='black')
     if v >= 1:
-        show_im(results['color_b'], "B field color, HSV colorhweel")
+        show_im(results['color_b'], "B field color, HSV colorhweel", cbar=False)
     
     # save the images
     if save: 

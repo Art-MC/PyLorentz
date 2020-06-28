@@ -278,7 +278,7 @@ def scale_stack(imstack):
 to have handy when working in Jupyter notebooks."""
 
 
-def show_im(im, title=None):
+def show_im(image, title=None, simple=False, origin='upper', cbar=True, cbar_title=''):
     """Display an image on a new axis.
     
     Takes a 2D array and displays the image in grayscale with optional title on 
@@ -286,17 +286,48 @@ def show_im(im, title=None):
     too many are open it's a good idea to close with plt.close('all'). 
 
     Args: 
-        im: 2D array or list. Image to be displayed.
+        image: 2D array or list. Image to be displayed.
     Keyword Args: 
         title: String. Title of plot. 
-    
+        simple: Bool. If True, will just show image. If False, will show a 
+            colorbar with axes labels, and will adjust the contrast range for 
+            images with a very small range of values (<1e-12). 
+        origin: String.
+            'upper': (default) (0,0) in upper left corner, y-axis goes down. 
+            'lower': (0,0) in lower left corner, y-axis goes up. 
+        cbar: Bool. Choose to display the colorbar or not. Only matters when
+            simple = False. 
+        cbar_title: String. Title attached to the colorbar (indicating the 
+            units or significance of the values). 
     Returns:
         Nothing
     """
-    fig,ax = plt.subplots()
-    ax.matshow(im, cmap = 'gray', origin = 'upper')
+    fig, ax = plt.subplots()
+    if not simple and np.max(image) - np.min(image) < 1e-12:
+        # adjust coontrast range
+        vmin = np.min(image) - 1e-12
+        vmax = np.max(image) + 1e-12
+        im = ax.matshow(image, cmap = 'gray', origin=origin, vmin=vmin, vmax=vmax)
+    else:
+        im = ax.matshow(image, cmap = 'gray', origin=origin)
+
+    plt.tick_params(axis='x',top=False)
+    ax.xaxis.tick_bottom()
+
     if title is not None: 
-        ax.set_title(str(title))
+        ax.set_title(str(title), pad=0)
+
+    if not simple:
+        ax.tick_params(direction='in')
+        if origin == 'lower': 
+            ax.text(y=0,x=0,s='pixels', rotation=-45, va='top', ha='right')
+        elif origin =='upper': 
+            ax.text(y=image.shape[0],x=0,s='pixels', rotation=-45, va='top', ha='right')
+
+
+        if cbar: 
+            plt.colorbar(im, ax=ax, pad=0.02, format="%.2g", label=str(cbar_title))
+
     plt.show()
     return
 

@@ -11,26 +11,33 @@ Modified, CD Phatak, ANL, 22.May.2016.
 """
 
 import numpy as np
-# from TIE_helper import *
 import time
-import multiprocessing as mp
-# from mp_helper import exp_sum
+import numba
+from numba import jit
 
-def exp_sum(inds, KY, KX, j_n, i_n, Dshp, my_n, mx_n, Sy, Sx):
-    """Called linsupPhi when running with multiprocessing"""
-    mphi_k = np.zeros(KX.shape,dtype=complex)
-    ephi_k = np.zeros(KX.shape,dtype=complex)
-    
-    for ind in inds:
-        z = ind[0]
-        y = ind[1]
-        x = ind[2]
 
+@jit(nopython=True, parallel=True)
+def exp_sum(mphi_k, ephi_k, inds, KY, KX, j_n, i_n, my_n, mx_n, Sy, Sx):
+    """Called by linsupPhi when running with multiprocessing and numba (default). 
+
+    Numba incorporates just-in-time (jit) compiling and multiprocessing to numpy
+    array calculations, greatly speeding up the phase-shift computation beyond 
+    that of pure vectorization and without the memory cost. Running this 
+    for the firs time each session will take an additional 5-10 seconds as it is
+    compiled. 
+
+    This function could be further improved by sending it to the GPU, or likely
+    by other methods we haven't considered. If you have suggestions (or better
+    yet, written and tested code) please email amccray@anl.gov. 
+    """
+    for i in numba.prange(np.shape(inds)[0]):
+        z = int(inds[i,0])
+        y = int(inds[i,1])
+        x = int(inds[i,2])
         sum_term = np.exp(-1j * (KY*j_n[z,y,x] + KX*i_n[z,y,x]))
-        ephi_k += sum_term * Dshp[z,y,x]
-        mphi_k += sum_term * (my_n[z,y,x]*Sx - mx_n[z,y,x]*Sy)
-
-    return (ephi_k, mphi_k)
+        ephi_k += sum_term 
+        mphi_k += sum_term * (my_n[z,y,x]*Sx - mx_n[z,y,x]*Sy) 
+    return ephi_k, mphi_k
 
 def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B=1.0, pre_E=None, v=1, multiproc=True):
     """Applies linear supeposition principle for 3D reconstruction of magnetic and electrostatic phase shifts.
@@ -42,12 +49,11 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     real space values are returned.
 
     Args: 
-        mx: 3D array. x component of magnetization at each voxel (z,y,x) (gauss)
-        my: 3D array. y component of magnetization at each voxel (z,y,x) (gauss)
-        mz: 3D array. z component of magnetization at each voxel (z,y,x) (gauss)
-        Dshp: 3D array. Weighted shape function of the object. Where value is 0
-            phase is not computed, otherwise it is multiplied by the voxel value
-            of Dshp. 
+        mx: 3D array. x component of magnetization at each voxel (z,y,x)
+        my: 3D array. y component of magnetization at each voxel (z,y,x)
+        mz: 3D array. z component of magnetization at each voxel (z,y,x)
+        Dshp: 3D array. Binary shape function of the object. Where value is 0,
+            phase is not computed.  
         theta_x: Float. Rotation around x-axis (degrees) 
         theta_y: Float. Rotation around y-axis (degrees) 
         pre_B: Float. Prefactor for unit conversion in calculating the magnetic 
@@ -66,7 +72,6 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     """
     vprint = print if v>=1 else lambda *a, **k: None
     if pre_E is None: # pre_E and pre_B should be set for material params
-        print('adjusting')
         pre_E = 4.80233*pre_B # a generic value in case its not.  
 
     [dimz,dimy,dimx] = mx.shape
@@ -81,27 +86,23 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     KX = X*dk
     KY = Y*dk
     KK = np.sqrt(KX**2 + KY**2) # same as dist(ny, nx, shift=True)*2*np.pi
-    zeros = np.where(KK == 0)   # but we need KX and KY later anyways. 
-    KK[zeros] = 1.0 # remove points where KK is zero as will divide by
+    zeros = np.where(KK == 0)   # but we need KX and KY later. 
+    KK[zeros] = 1.0 # remove points where KK is zero as will divide by it
 
-    #now compute constant factors (apply actual constants at very end)
+    # compute S arrays (will apply constants at very end)
     inv_KK =  1/KK**2
     Sx = 1j * KX * inv_KK
     Sy = 1j * KY * inv_KK
     Sx[zeros] = 0.0
     Sy[zeros] = 0.0
-
-    #Now we loop through all coordinates and compute the summation terms
-    mphi_k = np.zeros(KK.shape,dtype=complex)
-    ephi_k = np.zeros(KK.shape,dtype=complex)
     
-    #Trying to use nonzero elements in Dshape to limit the iterations.
+    # Get indices for which to calculate phase shift. Skip all pixels where
+    # thickness == 0 
     if Dshp is None: 
         Dshp = np.ones(mx.shape)
     # exclude indices where thickness is 0, compile into list of ((z1,y1,x1), (z2,y2...
     zz, yy, xx = np.where(Dshp != 0)
     inds = np.dstack((zz,yy,xx)).squeeze()
-    inds = tuple(map(tuple,inds))
 
     # Compute the rotation angles
     st = np.sin(np.deg2rad(theta_x))
@@ -122,44 +123,34 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
     mx_n = mx*cg + my*sg*st + mz*sg*ct
     my_n = my*ct - mz*st
 
-    cc = -1
+    # setup 
+    mphi_k = np.zeros(KK.shape,dtype=complex)
+    ephi_k = np.zeros(KK.shape,dtype=complex)
+
     nelems = np.shape(inds)[0]
     stime = time.time()
-    otime = time.time()
     vprint(f'Beginning phase calculation for {nelems:g} voxels.')
     if multiproc:
-        batches = mp.cpu_count()
-        vprint(f"Splitting and running on {batches} cpus")
-        pool = mp.Pool(processes=batches)
-        batch_inds = np.array_split(inds, batches)
-        batches_phi = []
-        for batch in batch_inds:
-            batches_phi.append(pool.apply_async(exp_sum, args=(batch, KY, KX, j_n, i_n,
-                                                Dshp, my_n, mx_n, Sy, Sx,)))
-        # pool.close()
-        # pool.join() 
-        em_stack = [p.get() for p in batches_phi]
-        # em_stack = list(map(lambda x: x.get(), batches_phi))
-        em = np.sum(em_stack, axis=0)
-        ephi_k = em[0]
-        mphi_k = em[1]
-        vprint(f"total time multiprocess with {batches} jobs: {time.time()-stime:.5g} sec, {(time.time()-stime)/nelems:.5g} sec/voxel.")
+        vprint("Running in parallel with numba.")
+        ephi_k, mphi_k = exp_sum(mphi_k, ephi_k, inds, KY, KX, j_n, i_n, my_n, mx_n, Sy, Sx)        
 
     else:
         vprint("Running on 1 cpu.")
+        otime = time.time()
         vprint('0.00%', end=' .. ')
+        cc = -1
         for ind in inds:
             cc += 1
-            if time.time() - stime >= 15:
+            if time.time() - otime >= 15:
                 vprint(f'{cc/nelems*100:.2f}%', end=' .. ')
-                stime = time.time()
+                otime = time.time()
             # compute the expontential summation
             sum_term = np.exp(-1j * (KY*j_n[ind] + KX*i_n[ind]))
-            ephi_k += sum_term * Dshp[ind]
+            ephi_k += sum_term 
             mphi_k += sum_term * (my_n[ind]*Sx - mx_n[ind]*Sy)
-
         vprint('100.0%')
-        print(f"total time loop method: {time.time()-otime:.5g} sec, {(time.time()-otime)/nelems:.5g} sec/voxel.")
+
+    vprint(f"total time: {time.time()-stime:.5g} sec, {(time.time()-stime)/nelems:.5g} sec/voxel.")
     #Now we have the phases in K-space. We convert to real space and return
     ephi_k[zeros] = 0.0
     mphi_k[zeros] = 0.0
@@ -168,18 +159,19 @@ def linsupPhi(mx=1.0, my=1.0, mz=1.0, Dshp=None, theta_x=0.0, theta_y=0.0, pre_B
 
     return [ephi,mphi]
 
-def mansPhi(bx = 1.0,by = 1.0,bz = 1.0,beam = [0.0,0.0,1.0],thick = 1.0,embed = 0.0): 
+def mansPhi(bx = 1.0,by = 1.0,bz = None,beam = [0.0,0.0,1.0],thick = 1.0,embed = 0.0): 
     """Calculate magnetic phase shift using Mansuripur algorithm [1]. 
 
     Unlike the linear superposition method, this algorithm only accepts 2D 
-    samples. The input given is expected to be 2D arrays for Bx, By, Bz. 
+    samples. The input given is expected to be 2D arrays for Bx, By, Bz. It can 
+    compute beam angles close to (0,0,1), but for tilts 
 
     Args: 
         bx: 2D array. x component of magnetization at each pixel.
         by: 2D array. y component of magnetization at each pixel.
         bz: 2D array. z component of magnetization at each pixel.  
         beam: List [x,y,z]. Vector direction of beam. Default [001]. 
-        thick: Float. Thickness of the sample in pixels, need not be an int. 
+        thick: Float. Thickness of the sample in pixels. 
         embed:  Int. Whether or not to embed the bx, by, bz into a larger array
             for fourier-space computation. This improves edge effects at the 
             cost of reduced speed. 
@@ -195,34 +187,34 @@ def mansPhi(bx = 1.0,by = 1.0,bz = 1.0,beam = [0.0,0.0,1.0],thick = 1.0,embed = 
     """
     #Normalize the beam direction
     beam = np.array(beam)
-    beam /= np.sqrt(np.sum(beam**2))
+    beam = beam / np.sqrt(np.sum(beam**2))
 
     #Get dimensions
     [xsz,ysz] = bx.shape
 
     #Embed
     if (embed == 1.0):
-        bdim = 1024.0
+        bdim = 1024
         bdimx,bdimy = bdim,bdim
     elif (embed == 0.0):
         bdimx,bdimy = xsz,ysz
     else:
-        bdim = np.float(embed)
+        bdim = int(embed)
         bdimx,bdimy = bdim,bdim
 
     bigbx = np.zeros([bdimx,bdimy])
     bigby = np.zeros([bdimx,bdimy])
     bigbx[int(bdimx/2-xsz/2):int(bdimx/2+xsz/2),int(bdimy/2-ysz/2):int(bdimy/2+ysz/2)] = bx
     bigby[int(bdimx/2-xsz/2):int(bdimx/2+xsz/2),int(bdimy/2-ysz/2):int(bdimy/2+ysz/2)] = by
-    if (bz != 1.0):
+    if bz is not None:
         bigbz = np.zeros([bdimx,bdimy])
-        bigbz[bdimx/2-xsz/2:bdimx/2+xsz/2,bdimy/2-ysz/2:bdimy/2+ysz/2] = bz
-
+        bigbz[int(bdimx/2-xsz/2):int(bdimx/2+xsz/2),int(bdimy/2-ysz/2):int(bdimy/2+ysz/2)] = bz
+    
     #Compute the auxiliary arrays requried for computation
     dsx = 2.0*np.pi/bdimx 
-    linex = (np.arange(bdimx)-np.float(bdimx/2))*dsx
+    linex = (np.arange(bdimx)-bdimx/2)*dsx
     dsy = 2.0*np.pi/bdimy
-    liney = (np.arange(bdimy)-np.float(bdimy/2))*dsy
+    liney = (np.arange(bdimy)-bdimy/2)*dsy
     [Sx,Sy] = np.meshgrid(linex,liney)
     S = np.sqrt(Sx**2 + Sy**2)
     zinds = np.where(S == 0)
@@ -233,34 +225,40 @@ def mansPhi(bx = 1.0,by = 1.0,bz = 1.0,beam = [0.0,0.0,1.0],thick = 1.0,embed = 
     sigy[zinds] = 0.0
 
     #compute FFTs of the B arrays.
-    fbx = np.fft.fftshift(np.fft.fftn(bigbx))
-    fby = np.fft.fftshift(np.fft.fftn(bigby))
-    if (bz != 1.0):
-        fbz = np.fft.fftshift(np.fft.fftn(bigbz))
+    fbx = np.fft.fftshift(np.fft.fft2(bigbx))
+    fby = np.fft.fftshift(np.fft.fft2(bigby))
+
+    if bz is not None:
+        fbz = np.fft.fftshift(np.fft.fft2(bigbz))
 
     #Compute vector products and Gpts
-    if (bz == 1.0): # eq 13a in Mansuripur 
+    if bz is None: # eq 13a in Mansuripur 
         prod = sigx*fby - sigy*fbx
         Gpts = 1+1j*0
+
     else:
-        prod = sigx*(fby*beam[0]**2 - fbx*beam[0]*beam[1] - fbz*beam[1]*beam[2]+ fby*beam[2]**2
-                ) + sigy*(fby*beam[0]*beam[1] - fbx*beam[1]**2 + fbz*beam[0]*beam[2] - fbx*beam[2]**2)
-        arg = np.float(np.pi*thick*(sigx*beam[0]+sigy*beam[1])/beam[2])
+        e_x, e_y, e_z = beam
+        prod = sigx*(fby*e_x**2 - fbx*e_x*e_y - fbz*e_y*e_z+ fby*e_z**2
+                ) + sigy*(fby*e_x*e_y - fbx*e_y**2 + fbz*e_x*e_z - fbx*e_z**2)
+        arg = np.pi*thick*(sigx*e_x+sigy*e_y)/e_z
+        denom = 1.0/((sigx*e_x+sigy*e_y)**2 + e_z**2)
         qq = np.where(arg == 0)
-        denom = 1.0/((sigx*beam[0]+sigy*beam[1])**2 + beam[2]**2)
-        Gpts = complex(denom*np.sin(arg)/arg)
+        arg[qq] = 1
+        Gpts = (denom*np.sin(arg)/arg).astype(complex)
         Gpts[qq] = denom[qq]
 
     #prefactor
-    prefac = 1j*thick/S
-    
+    prefac = 1j*thick/S    
     #F-space phase
     fphi = prefac * Gpts * prod
     fphi[zinds] = 0.0
-    phi = np.fft.ifftn(np.fft.ifftshift(fphi)).real
+    phi = np.fft.ifft2(np.fft.ifftshift(fphi)).real
 
     #return only the actual phase part from the embed file
-    ret_phi = phi[bdimx//2-xsz//2:bdimx//2+xsz//2,bdimy//2-ysz//2:bdimy//2+ysz//2]
+    if embed != 0:
+        ret_phi = phi[bdimx//2-xsz//2:bdimx//2+xsz//2,bdimy//2-ysz//2:bdimy//2+ysz//2]
+    else:
+        ret_phi = phi
 
     return ret_phi
 #done.
